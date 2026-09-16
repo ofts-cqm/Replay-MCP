@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "replay_mcp",
+  "version": "${version}",
+  "name": "Replay MCP",
+  "description": "A MCP Server for AI to operate Replay",
+  "authors": [],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/replay_mcp/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.ofts.replay_mcp.client.ReplayMCPClient"
+    ],
+    "main": [
+      "net.ofts.replay_mcp.ReplayMCP"
+    ]
+  },
+  "mixins": [
+    "replay_mcp.mixins.json",
+    {
+      "config": "replay_mcp.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
