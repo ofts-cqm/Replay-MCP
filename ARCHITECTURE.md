@@ -1,0 +1,1022 @@
+# Replay MCP Architecture and Interface Scope
+
+Status: draft for scoping; no implementation contract yet.
+
+Replay MCP is a client-side Fabric submod for Replay Mod plus a local MCP
+server and a Codex plugin. Together they let an AI agent:
+
+1. observe and operate a live Minecraft client through normal player inputs;
+2. record performances with Replay Mod;
+3. inspect and edit replay timelines and camera paths;
+4. render deterministic Minecraft footage; and
+5. hand rendered footage to an optional third-party video-editor MCP.
+
+The current project scaffold targets Minecraft 26.2, Fabric Loader 0.19.5,
+Fabric API 0.160.0+26.2, and Replay Mod 26.2-2.6.27. Those versions describe
+the current development snapshot, not a permanent compatibility promise.
+
+## 1. Design principles
+
+- **The pixels come from Minecraft.** The agent directs and edits real recorded
+  gameplay rather than synthesizing Minecraft-like video.
+- **Observe, act, verify.** Visual frames and structured game state are both
+  first-class. Neither is sufficient alone.
+- **Use normal game paths.** Movement, interaction, flight, chat, and commands
+  go through Minecraft's normal client mechanisms so servers and Replay Mod see
+  legitimate player activity.
+- **Keep workflows out of the wire protocol.** The mod exposes reliable,
+  composable primitives. Codex skills describe filmmaking workflows such as
+  scene transitions, dialogue coverage, montages, and trailers.
+- **Make mutations auditable.** Every action, command, timeline edit, and render
+  is associated with a request ID and an action trace.
+- **One director at a time.** The mod, as the final authority, grants at most
+  one agent an exclusive control lease for a Minecraft instance. Read-only
+  observers may coexist, but they cannot move the player or mutate replay
+  state.
+- **Keep post-production replaceable.** Replay MCP exports footage and an
+  editor-neutral handoff manifest. Editor-specific MCPs remain optional sibling
+  integrations.
+- **Never expose arbitrary JVM execution.** The bridge has a typed protocol and
+  a finite capability set. Command execution means Minecraft player commands,
+  not shell, Java, script, or server-console execution.
+
+## 2. Complete system architecture
+
+```mermaid
+flowchart TB
+    Agent["Codex / AI agent"]
+
+    subgraph Plugin["Replay Director Codex plugin"]
+        Skills["Filmmaking and tool-use skills"]
+        PluginManifest["plugin.json + mcp.json"]
+        EditorProfiles["Optional editor integration profiles"]
+    end
+
+    subgraph MCP["Replay MCP sidecar process"]
+        MCPServer["MCP tool and resource server"]
+        Session["Session and capability manager"]
+        Jobs["Asynchronous job manager"]
+        Projects["Production manifest store"]
+        Artifacts["Artifact index"]
+        BridgeClient["Authenticated loopback bridge client"]
+    end
+
+    subgraph MC["Minecraft client process"]
+        subgraph Mod["Replay MCP Fabric submod"]
+            BridgeServer["Authenticated loopback bridge server"]
+            DirectorLease["Authoritative director lease"]
+            Live["Live-game adapter"]
+            Input["Input and interaction controller"]
+            Observe["Framebuffer and state observer"]
+            Record["Replay recording adapter"]
+            Replay["Replay playback and timeline adapter"]
+            Render["Replay rendering adapter"]
+            Overlay["Status, permissions, audit, emergency-stop UI"]
+        end
+
+        Minecraft["Minecraft client"]
+        ReplayMod["Replay Mod"]
+    end
+
+    subgraph Files["Local files"]
+        Replays[".mcpr recordings"]
+        ProjectFiles["Production manifests and sidecar metadata"]
+        Rendered["Rendered clips, stills, and previews"]
+        Handoff["Editor handoff manifest"]
+    end
+
+    subgraph External["Optional post-production integration"]
+        EditorMCP["Third-party editor MCP"]
+        Editor["User-installed Resolve, Premiere, etc."]
+        Final["Finished video"]
+    end
+
+    Agent --> Plugin
+    Skills --> MCPServer
+    PluginManifest --> MCPServer
+    EditorProfiles -. "optional tool guidance" .-> EditorMCP
+
+    MCPServer --> Session
+    MCPServer --> Jobs
+    MCPServer --> Projects
+    MCPServer --> Artifacts
+    MCPServer --> BridgeClient
+    BridgeClient <-->|"versioned JSON-RPC over authenticated localhost"| BridgeServer
+
+    BridgeServer --> DirectorLease
+    DirectorLease --> Live
+    DirectorLease --> Record
+    DirectorLease --> Replay
+    DirectorLease --> Render
+    BridgeServer --> Observe
+    Live --> Input
+    Record --> ReplayMod
+    Replay --> ReplayMod
+    Render --> ReplayMod
+    Input --> Minecraft
+    Observe --> Minecraft
+    Overlay --> Minecraft
+
+    ReplayMod <--> Replays
+    Projects <--> ProjectFiles
+    Artifacts <--> Rendered
+    Projects --> Handoff
+
+    Handoff --> EditorMCP
+    Rendered --> EditorMCP
+    EditorMCP <--> Editor
+    Editor --> Final
+```
+
+### Why the MCP server is a sidecar
+
+The MCP server is a separate local process rather than an MCP implementation
+inside Minecraft. This keeps MCP client lifecycle, standard I/O, schema
+validation, artifacts, and long-running jobs independent from the game render
+thread. Minecraft can restart without destroying the agent's project manifest,
+and the mod does not need to hold Codex's standard-input/output connection.
+
+The sidecar may be implemented in any suitable language. The protocol between
+the sidecar and mod is the stable boundary; implementation language is not part
+of the public contract.
+
+## 3. Runtime modes and state transitions
+
+```mermaid
+stateDiagram-v2
+    [*] --> GameOffline
+    GameOffline --> LiveIdle: client connects
+    LiveIdle --> LiveRecording: start recording
+    LiveRecording --> LiveIdle: stop recording
+    LiveIdle --> ReplayLoaded: open replay
+    ReplayLoaded --> ReplayPlaying: play
+    ReplayPlaying --> ReplayLoaded: pause
+    ReplayLoaded --> Rendering: start render
+    ReplayPlaying --> Rendering: start render
+    Rendering --> ReplayLoaded: completed / cancelled / failed
+    ReplayLoaded --> LiveIdle: close replay and return to game
+    LiveIdle --> GameOffline: client disconnects
+    LiveRecording --> GameOffline: client exits or disconnects
+```
+
+Rules:
+
+- Live-game controls are unavailable while a replay is the active world.
+- Replay editing and rendering are unavailable until a replay is loaded.
+- Rendering is represented as an asynchronous job and must never block the MCP
+  transport for the duration of an export.
+- A disconnect cancels held inputs immediately. Recoverable project, replay,
+  render, and audit metadata remain on disk.
+- Only the holder of the mod-enforced director lease may invoke state-changing
+  game, recording, replay, timeline, or rendering operations. Observations and
+  status reads remain shareable.
+- Lease loss cancels an active action batch and releases every agent-held input.
+  It does not automatically discard a replay or terminate a healthy render.
+
+## 4. Public MCP tool surface
+
+The following is the proposed complete public surface. Names are intentionally
+domain-prefixed so tool discovery remains understandable when an editor MCP is
+also installed.
+
+### 4.1 System, jobs, and artifacts
+
+#### `system_status`
+
+Returns:
+
+- sidecar, bridge-protocol, mod, Minecraft, Fabric, and Replay Mod versions;
+- connection and runtime mode;
+- negotiated capabilities and feature flags;
+- active game, recording, replay, and rendering state;
+- configured project and artifact roots;
+- security state, including whether commands and flight are enabled; and
+- active job summaries.
+
+This is the first tool a skill calls before relying on a capability.
+
+#### `control_status`
+
+Returns the current director-lease state for a Minecraft instance: free or
+held, an opaque owner label, acquisition/last-active times, expiry, active
+operation, and whether a human override is pending. It never exposes the
+holder's authentication secret.
+
+#### `control_acquire`
+
+Requests the exclusive director lease for one Minecraft instance. It returns a
+lease ID and expiry information when the instance is free. It returns a typed
+`control_busy` conflict when another live owner holds it; it never silently
+steals or queues control.
+
+The sidecar renews the lease through authenticated bridge heartbeats while its
+MCP session is connected and active. A configured idle ceiling prevents an
+abandoned but technically connected process from holding control forever.
+
+#### `control_release`
+
+Releases the caller's director lease. The mod first cancels the caller's active
+action batch and releases all held inputs. Releasing control does not stop an
+otherwise healthy recording or render; their state remains visible to the next
+director.
+
+#### `job_list`
+
+Lists asynchronous render, preview, analysis, and export jobs. Supports status
+and project filters.
+
+#### `job_get`
+
+Returns progress, timestamps, logs, warnings, result artifact IDs, and a typed
+failure for one job.
+
+#### `job_cancel`
+
+Requests safe cancellation of a cancellable job. Partial outputs are reported
+and marked incomplete rather than silently treated as valid artifacts.
+Cancelling a job that is running inside Minecraft requires that instance's
+director lease; cancelling a sidecar-only job is limited to its owning MCP
+session.
+
+#### `artifact_list`
+
+Lists screenshots, motion observations, replay files, preview files, rendered
+clips, stills, manifests, and logs. Supports project, scene, shot, take, type,
+and creation-time filters.
+
+Binary artifacts are read through MCP resources rather than embedded in every
+tool result.
+
+### 4.2 Live-game observation
+
+#### `game_observe`
+
+Captures a visual and structured observation of the current client.
+
+Inputs:
+
+- `view`: `player`, `clean`, or `annotated`;
+- `include`: requested state sections;
+- image size, downscale, and quality limits;
+- nearby-object distance and result limits; and
+- whether to persist the frame as an artifact.
+
+Returns:
+
+- an MCP image content block, not merely a local path;
+- frame ID, game tick, wall-clock time, and render dimensions;
+- camera position, rotation, roll when applicable, and FOV;
+- player health, hunger, effects, game mode, abilities, selected item, and
+  inventory summary;
+- crosshair hit result;
+- visible entities with stable observation IDs, names/types, world positions,
+  distances, and screen-space bounding boxes;
+- selected visible blocks or points of interest;
+- current dimension, time, weather, light, and world context; and
+- current screen, focused widget, and interactable inventory/UI elements.
+
+`annotated` view overlays the same stable IDs returned in the structured data.
+That connects visual reasoning to later `game_perform` targets.
+
+#### `game_observe_motion`
+
+Captures a short visual burst for judging motion that a still image cannot
+show: camera easing, walking cadence, particles, combat timing, animation, and
+temporal rendering problems.
+
+Inputs include duration or frame count, interval, downscale, quality, and
+output mode (`contact_sheet` or `frames`). The result reports dropped frames
+and exact capture times.
+
+#### `game_query`
+
+Reads precise structured state without requiring another image.
+
+Query kinds:
+
+- `player`
+- `world`
+- `entities`
+- `blocks`
+- `inventory`
+- `screen`
+- `scoreboard`
+- `chat_or_system_messages`
+- `target`
+
+Queries support bounds, distance, type, name, tags, stable observation IDs, and
+result limits. A query is read-only and must not load arbitrary distant chunks.
+
+### 4.3 Live-game performance
+
+#### `game_perform`
+
+Executes an ordered batch of normal player actions. The batch reduces MCP
+round-trips while retaining a trace for every step.
+
+Common batch fields:
+
+- `request_id`: idempotency and audit key;
+- `actions`: ordered typed actions;
+- `on_failure`: `stop` or `continue`;
+- `capture`: `none`, `after`, `checkpoints`, or `after_and_on_failure`; and
+- an overall timeout.
+
+Every action may supply a timeout, preconditions, expected postconditions, and
+a step label. The result contains start/end ticks, resolved targets, state
+changes, server/system messages, observation artifact IDs, and typed errors.
+
+All held keys and buttons are released on completion, cancellation,
+disconnect, timeout, or error.
+
+##### Camera actions
+
+| Action | Purpose |
+| --- | --- |
+| `look` | Set an absolute yaw and pitch over a duration. |
+| `turn` | Apply a relative yaw and pitch change. |
+| `look_at_position` | Aim at a world coordinate. |
+| `look_at_entity` | Aim at an entity or observation ID. |
+| `look_at_block` | Aim at a block position and optional face. |
+
+##### Ground and water movement
+
+| Action | Purpose |
+| --- | --- |
+| `move` | Hold forward/strafe axes for ticks or until a condition. |
+| `jump` | Tap or hold jump. |
+| `sprint` | Set sprint input for a duration. |
+| `sneak` | Set sneak input for a duration. |
+| `swim` | Move in water with horizontal and vertical components. |
+| `stop_all_inputs` | Immediately release every agent-held input. |
+
+##### Creative and spectator flight
+
+| Action | Purpose |
+| --- | --- |
+| `set_flying` | Enable or disable flight through normal game controls and verify the result. |
+| `fly_move` | Fly with forward, strafe, vertical, sprint, and duration inputs. |
+| `fly_to` | Input-driven flight toward a coordinate with tolerance and timeout. |
+| `ascend` | Vertical flight convenience action. |
+| `descend` | Vertical descent convenience action. |
+| `land` | Descend to a safe surface and disable flight when requested. |
+
+Flight requires the current server/game mode to grant the ability. The tool
+does not fabricate client abilities or bypass server authority.
+
+##### World interaction
+
+| Action | Purpose |
+| --- | --- |
+| `attack` | Tap or hold the normal attack input. |
+| `use` | Tap, hold, or release the normal use input for either hand. |
+| `interact_entity` | Resolve and interact with a specific entity. |
+| `break_block` | Aim and hold attack until the block changes or a timeout occurs. |
+| `place_or_use_item` | Use the selected item against a resolved target. |
+| `swing_hand` | Produce a hand swing without inventing a world mutation. |
+| `pick_block` | Use Minecraft's pick-block behavior when available. |
+
+##### Equipment, inventory, and screens
+
+| Action | Purpose |
+| --- | --- |
+| `select_hotbar_slot` | Select slots 1 through 9. |
+| `swap_offhand` | Invoke the normal offhand swap. |
+| `drop_item` | Drop one item or the selected stack. |
+| `open_inventory` | Open the player inventory. |
+| `close_screen` | Close the current handled screen. |
+| `click_slot` | Click a structured inventory slot with a declared click type. |
+| `click_widget` | Activate a structured widget; coordinates are a fallback, not the primary selector. |
+| `type_text` | Type into the focused text field. |
+| `submit` | Submit the active screen or text field. |
+| `cancel` | Cancel or escape the active screen. |
+| `respawn` | Activate the normal respawn control when present. |
+
+##### Vehicles
+
+| Action | Purpose |
+| --- | --- |
+| `mount` | Interact with a mountable entity. |
+| `dismount` | Invoke normal dismount behavior. |
+| `vehicle_input` | Apply steering, forward/back, jump, and dismount inputs supported by the vehicle. |
+
+##### Communication and commands
+
+| Action | Purpose |
+| --- | --- |
+| `send_chat` | Send a normal chat message. |
+| `execute_command` | Send an arbitrary player command through Minecraft's normal command path. |
+
+`execute_command` is deliberately not limited to `/tp`. Scene changes on real
+servers commonly use plugin commands such as `/home`, `/warp`, `/res tp`, or
+`/p tp`. The server remains authoritative and the player cannot exceed their
+existing permissions.
+
+Command action metadata includes an intent:
+
+- `scene_transition`
+- `scene_setup`
+- `in_performance`
+
+The action trace records the literal command subject to configured secret
+redaction, the position and dimension before and after it, and resulting
+system/chat messages. Configurable deny rules may guard genuinely destructive
+commands, but there is no hard-coded vanilla-only allowlist.
+
+##### Timing and verification
+
+| Action | Purpose |
+| --- | --- |
+| `wait_ticks` | Wait a deterministic number of client ticks. |
+| `wait_until` | Wait for a typed game-state condition with a timeout. |
+| `checkpoint` | Record state and optionally capture an observation between steps. |
+
+High-level scene transitions are a skill workflow rather than another bridge
+primitive: mark out, execute commands, wait for world/chunk stabilization,
+fly or walk into place, observe, and mark in.
+
+### 4.4 Replay recording
+
+#### `recording_status`
+
+Returns whether recording is available and active, the current replay/take ID,
+start time, duration, file location, markers, warnings, and dropped/error state.
+
+#### `recording_start`
+
+Starts a new Replay Mod recording with project, scene, and take metadata. It
+returns a stable take ID and the intended replay artifact ID.
+
+#### `recording_stop`
+
+Stops and finalizes the active recording. It waits only for a bounded handoff;
+long finalization becomes a job. The result must distinguish a finalized replay
+from a recoverable temporary recording.
+
+#### `recording_add_marker`
+
+Adds a named marker at the current recording tick with a category such as
+`action`, `cut`, `transition_out`, `transition_in`, `mistake`, or `note`.
+
+There is no assumption that a scene transition can be removed from the raw
+recording. Transition markers tell replay editing and post-production which
+interval to exclude.
+
+### 4.5 Replay library and session
+
+#### `replay_list`
+
+Lists available replay recordings with duration, created time, server/world,
+project associations, compatibility, recoverability, and metadata summaries.
+
+#### `replay_get`
+
+Returns metadata for one replay, including markers, duration, protocol/version
+information, associated takes/shots/renders, and validation warnings.
+
+#### `replay_open`
+
+Loads a replay into Replay Mod and returns an asynchronous job if loading or
+cache construction takes more than a short bounded interval.
+
+#### `replay_close`
+
+Closes the active replay safely. Unsaved timeline changes produce a typed
+conflict rather than being silently discarded.
+
+#### `replay_save`
+
+Persists Replay Mod path/timeline state and Replay MCP sidecar metadata. An
+optional `save_as` target preserves the source replay.
+
+Source recordings should be treated as immutable by default; edits are stored
+as named versions or sidecar project data until explicitly saved.
+
+### 4.6 Replay playback, observation, and editing
+
+#### `replay_playback`
+
+Controls the active replay:
+
+- `seek` to replay time;
+- `play` and `pause`;
+- set preview speed;
+- step by tick or frame where supported; and
+- select a replay entity to spectate or detach from it.
+
+All times use integer microseconds at the public boundary. Game ticks and frame
+numbers may be returned as supplemental metadata but are not the canonical edit
+unit.
+
+#### `replay_observe`
+
+Returns the same visual/structured observation concept as `game_observe`, but
+for the current replay time and replay camera. It includes replay time, output
+timeline time, evaluated camera state, visible replay entities, and active path
+segments. Modes are `player`, `clean`, and `annotated`.
+
+#### `replay_timeline_get`
+
+Returns the editable timeline or a requested range, including:
+
+- replay-time mapping;
+- camera position/orientation keyframes;
+- optional roll, FOV, look-at, and spectate tracks when supported;
+- interpolation and easing;
+- recording and edit markers;
+- named shots and excluded transition ranges; and
+- validation warnings such as discontinuities or missing endpoints.
+
+Capability negotiation distinguishes native Replay Mod tracks from additional
+Replay MCP sidecar tracks.
+
+#### `replay_timeline_apply`
+
+Atomically applies a batch of timeline operations with a base revision. A stale
+base revision produces a conflict instead of overwriting newer work.
+
+Operations include:
+
+- upsert or delete a keyframe;
+- move a keyframe;
+- set interpolation/easing;
+- upsert or delete a marker;
+- define, rename, reorder, or remove a shot;
+- set a shot's replay in/out and output duration;
+- mark a range as excluded or transition footage;
+- replace one named track; and
+- copy or transform a camera path over a time range.
+
+The response includes the new revision, normalized keyframes, validation
+warnings, and an undo token. The MCP never accepts executable expressions as
+keyframe data.
+
+#### `replay_preview`
+
+Previews a shot or timeline range and produces either a low-resolution video,
+a contact sheet, or sampled frames. It is an asynchronous job for non-trivial
+ranges. Previewing is the visual verification step before an expensive render.
+
+### 4.7 Rendering
+
+#### `render_presets`
+
+Lists built-in and user-defined render presets with resolution, frame rate,
+codec/container, quality, audio, motion blur, and transparency capabilities.
+
+#### `render_validate`
+
+Performs a read-only preflight for one or more shots:
+
+- replay and camera-path validity;
+- output path and free space;
+- renderer, codec, and FFmpeg availability;
+- resolution and frame-rate support;
+- missing resources; and
+- estimated frame count and output size when possible.
+
+#### `render_start`
+
+Starts one shot, a range, or a batch of project shots. It accepts either a
+named preset or explicit supported overrides and always returns a job ID.
+
+Completed jobs register rendered clips and technical metadata as artifacts.
+Cancellation and progress use the generic job tools.
+
+#### `render_still`
+
+Renders a high-quality still at an exact timeline time for framing, thumbnail,
+or final-quality review. This differs from `replay_observe`, which is optimized
+for fast interactive inspection.
+
+### 4.8 Production project and editor handoff
+
+The sidecar maintains a small editor-neutral production model:
+
+```text
+Project
+└── Scene
+    └── Take -> Replay recording + marker range
+        └── Shot -> replay in/out + camera/timing tracks
+            └── Render -> media artifact + technical metadata
+```
+
+#### `project_list`
+
+Lists Replay MCP production projects and their current validation/render state.
+
+#### `project_create`
+
+Creates a project manifest with title, target aspect ratios, frame rate,
+resolution, output root, and optional creative brief.
+
+#### `project_get`
+
+Returns the full project or selected scenes/shots, including revisions,
+replay/render references, editorial intent, continuity notes, and artifact IDs.
+
+#### `project_apply`
+
+Atomically applies revision-checked operations to scenes, takes, shots,
+ordering, narration/caption notes, music cues, and post-production intent.
+
+#### `project_validate`
+
+Checks referential integrity, missing replays/renders, conflicting frame rates,
+unrendered shots, invalid ranges, discontinuities, and incomplete handoff data.
+
+#### `project_export_handoff`
+
+Produces an editor-neutral manifest containing:
+
+- ordered clips and absolute or safely resolved media paths;
+- stable project, scene, shot, take, replay, render, and artifact IDs;
+- source replay ranges and rendered-media in/out times;
+- frame rate, resolution, pixel aspect, color, audio, and duration metadata;
+- markers, captions, narration, music cues, transitions, and title intent;
+- provenance back to replay and camera-path revisions; and
+- checksums for media identity.
+
+The initial format is versioned Replay MCP JSON. Optional OTIO, EDL, FCP XML,
+or editor-native translators can be added later without changing the core
+project model.
+
+## 5. MCP resources
+
+Tools mutate state or run bounded queries. Larger immutable/read-only content
+is exposed as MCP resources:
+
+| Resource pattern | Content |
+| --- | --- |
+| `replay-mcp://schema/{name}` | Versioned public schemas and enumerations. |
+| `replay-mcp://artifact/{id}` | Image, video, replay, manifest, or log artifact. |
+| `replay-mcp://project/{id}/manifest` | Current production manifest. |
+| `replay-mcp://replay/{id}/metadata` | Replay metadata and compatibility report. |
+| `replay-mcp://job/{id}/log` | Complete job log when too large for `job_get`. |
+| `replay-mcp://audit/{session_id}` | Read-only action and command audit trace. |
+
+Media resources should support metadata-first inspection so the model does not
+accidentally load a full video when a thumbnail or manifest is sufficient.
+
+## 6. Mod-to-sidecar bridge interface
+
+This is an internal, versioned, authenticated protocol. It is not exposed to
+the network and is not a second public automation API.
+
+```mermaid
+sequenceDiagram
+    participant Mod as Minecraft Fabric submod
+    participant File as Per-instance discovery files
+    participant Sidecar as Replay MCP sidecar
+    participant Agent as MCP client / agent
+
+    Mod->>Mod: choose ephemeral loopback port
+    Mod->>Mod: generate instance ID and session token
+    Mod->>File: atomically publish descriptor + protected token
+    Agent->>Sidecar: MCP over stdio
+    Sidecar->>File: discover live instances
+    Sidecar->>Mod: WebSocket connect + authenticated hello
+    Mod-->>Sidecar: protocol version + capabilities + mode
+    Agent->>Sidecar: control_acquire
+    Sidecar->>Mod: lease.acquire(client identity)
+    Mod-->>Sidecar: lease ID + fencing epoch + expiry
+    Sidecar-->>Agent: control acquired
+    loop While connected and active
+        Sidecar->>Mod: authenticated heartbeat + lease renewal
+    end
+    Agent->>Sidecar: game_perform
+    Sidecar->>Mod: action request + current fencing epoch
+    Mod->>Mod: validate lease, then queue on client thread
+    Mod-->>Sidecar: progress/events/result
+    Sidecar-->>Agent: MCP result
+```
+
+### Transport
+
+- The initial cross-platform transport is a WebSocket bound only to an
+  ephemeral port on `127.0.0.1`. A later Unix-domain-socket or named-pipe
+  transport may carry the same protocol.
+- Messages use a versioned JSON-RPC-style envelope. WebSocket is used because
+  requests, cancellation, progress, and unsolicited state events are
+  bidirectional.
+- Authenticate with a high-entropy ephemeral token generated by the mod for
+  that Minecraft process.
+- Negotiate protocol versions, instance identity, capabilities, and runtime
+  mode during `hello` before accepting other requests.
+- Reject external interfaces and unauthenticated requests.
+- Use request IDs for correlation and idempotency.
+- Stream events for progress; do not poll the render thread aggressively.
+
+The sidecar still exposes ordinary MCP over standard input/output to Codex. The
+WebSocket is private plumbing between the sidecar and the mod; it is not the
+MCP transport presented to the agent.
+
+### Instance discovery
+
+Each running mod instance publishes an atomic descriptor beneath its Minecraft
+game directory, conceptually:
+
+```text
+<gameDir>/.replay-mcp/instances/<instance-id>/
+├── bridge.json
+└── token
+```
+
+`bridge.json` contains only discovery metadata: instance ID, process ID,
+loopback port, creation time, display name, game directory, and protocol/mod/
+Minecraft/Replay Mod versions. The separate token file is readable only by the
+current operating-system user where the platform supports file permissions.
+
+The sidecar discovers instances in explicitly configured game directories. It
+validates the PID and authenticated handshake instead of trusting a discovery
+file alone. Stale descriptors are ignored and later cleaned up. If multiple
+clients are running, read tools may specify an `instance_id`; mutating tools
+also require that instance's director lease.
+
+### Payload flow
+
+- Normal requests, responses, structured observations, progress, and events
+  travel as JSON messages.
+- A screenshot may use a binary WebSocket payload or an atomically written
+  staging artifact. In either case the sidecar validates its declared MIME
+  type, dimensions, length, and checksum before returning MCP image content.
+- Replays, previews, and rendered videos are never base64-encoded into bridge
+  JSON. The mod writes them under an allowed root and returns an artifact
+  descriptor; the sidecar registers and serves the artifact as an MCP resource.
+- Paths received from the mod are canonicalized and checked against configured
+  roots before the sidecar reads them.
+
+### Threading and cancellation
+
+The bridge I/O thread never reads or mutates Minecraft state directly. It
+validates and authenticates a request, then schedules work on the Minecraft
+client thread or render thread as required. Frame compression, hashing, and
+ordinary file I/O run on bounded worker threads. Each scheduled operation has a
+deadline and cancellation token.
+
+### Authoritative director lease
+
+The exclusive lease is stored and enforced in the mod, not in a sidecar lock
+file. This is necessary because two agents can launch two independent MCP
+sidecars against the same Minecraft process.
+
+The lease contains:
+
+- an unguessable lease ID associated with the authenticated bridge client;
+- a human-readable owner label for the in-game overlay;
+- acquisition, last-active, and expiry times; and
+- a monotonically increasing fencing epoch.
+
+Every state-changing bridge request carries the current fencing epoch. After a
+lease expires, is released, or is revoked, the mod increments the epoch and
+rejects delayed requests from the former owner even if they were already in a
+network buffer. This prevents a stale sidecar from resuming control after a new
+director has acquired it.
+
+Lease behavior:
+
+- status, observation, queries, job reads, and artifact reads need no lease;
+- live actions, commands, recording mutations, replay mode/playback mutations,
+  timeline writes, render starts, and cancellation of mod-backed jobs require
+  the lease;
+- sidecar-only project edits use revision conflicts instead of the Minecraft
+  director lease;
+- a bounded action in progress keeps its lease alive until it finishes or hits
+  its deadline;
+- loss of heartbeat, process exit, explicit release, idle expiry, emergency
+  stop, or human revocation cancels input and invalidates the lease;
+- the MCP API cannot force-acquire or revoke another owner; and
+- a human can always revoke control from the in-game overlay.
+
+By default, physical player input while an agent is directing triggers a human
+override: the current action stops, all synthetic inputs are released, and the
+lease is revoked. A local user setting may change this to warn-only for assisted
+operation, but an agent cannot change that setting.
+
+### Bridge command families
+
+- `system.*`: hello, capabilities, status, health, emergency stop.
+- `lease.*`: status, acquire, heartbeat, release, human revoke.
+- `observation.*`: framebuffer capture, motion burst, structured snapshot,
+  targeted query.
+- `action.*`: validate, start batch, cancel batch, release inputs.
+- `recording.*`: status, start, stop, marker.
+- `replay.*`: list, metadata, open, close, save, playback.
+- `timeline.*`: get, validate, apply, undo.
+- `render.*`: presets, preflight, start, still, cancel.
+
+### Bridge events
+
+- `connection.changed`
+- `lease.changed`
+- `mode.changed`
+- `screen.changed`
+- `action.progress`
+- `action.completed`
+- `recording.changed`
+- `replay.changed`
+- `timeline.changed`
+- `render.progress`
+- `render.completed`
+- `render.failed`
+- `emergency_stop`
+- `error`
+
+Game and render-thread operations are queued onto the correct Minecraft thread.
+Framebuffer copying occurs on the render thread; compression and artifact I/O
+occur off-thread.
+
+## 7. Fabric submod internal interfaces
+
+These are architectural responsibilities rather than promises about Java class
+names.
+
+| Component | Responsibility |
+| --- | --- |
+| `BridgeServer` | Authenticated local RPC, validation, event publication, protocol negotiation. |
+| `DirectorLeaseManager` | Enforces one exclusive director, heartbeat expiry, fencing epochs, and human override. |
+| `CapabilityRegistry` | Reports features supported by the installed Minecraft and Replay Mod versions. |
+| `ModeCoordinator` | Enforces live, recording, replay, and rendering state transitions. |
+| `GameObserver` | Produces synchronized framebuffer and structured state observations. |
+| `InputController` | Owns agent-held keys/buttons and guarantees their release. |
+| `TargetResolver` | Resolves stable observation IDs, entities, blocks, widgets, and slots. |
+| `ActionRunner` | Executes timed batches, conditions, checkpoints, and traces. |
+| `CommandExecutor` | Sends player commands and associates responses/state changes with traces. |
+| `RecordingAdapter` | Integrates Replay Mod recording lifecycle and markers. |
+| `ReplaySessionAdapter` | Opens, closes, seeks, and controls replay playback. |
+| `TimelineAdapter` | Reads and applies revisioned camera/time/marker changes. |
+| `RenderAdapter` | Preflights and runs Replay Mod renders and stills. |
+| `AuditService` | Persists action, command, edit, cancellation, and failure records. |
+| `ControlOverlay` | Shows connection, active operation, recording state, permissions, and emergency stop. |
+
+Where Replay Mod lacks a native representation for an optional track or piece
+of metadata, Replay MCP stores it in versioned sidecar data and makes that fact
+visible through capability and provenance fields.
+
+## 8. Codex plugin package
+
+```text
+replay-director-plugin/
+├── plugin.json
+├── mcp.json
+├── skills/
+│   ├── replay-mcp-tool-use/
+│   ├── production-planning/
+│   ├── scene-staging-and-transition/
+│   ├── gameplay-performance/
+│   ├── cinematic-camera-design/
+│   ├── continuity-and-coverage/
+│   ├── replay-editing/
+│   ├── visual-review-and-iteration/
+│   ├── replay-rendering/
+│   ├── trailer-and-montage/
+│   ├── tutorial-and-documentary/
+│   ├── machinima-and-dialogue/
+│   └── post-production-handoff/
+└── optional-integrations/
+    ├── resolve/
+    ├── premiere/
+    └── other-editor-profiles/
+```
+
+The exact set of artistic genre skills can grow without changing the MCP
+protocol. Skills should define shot language, pacing, coverage, continuity,
+review criteria, and recovery procedures rather than reimplementing tools.
+
+The core plugin registers only Replay MCP. An editor profile supplies guidance
+and optional configuration for a separately installed editor MCP.
+
+## 9. Optional post-production MCP contract
+
+Replay MCP does not proxy, vendor, or pretend to implement an editor MCP. The
+Codex agent coordinates the two sibling MCPs.
+
+An editor integration is considered usable when it can provide equivalents of:
+
+- inspect or create an editor project;
+- import media without duplicating it unexpectedly;
+- create and inspect sequences/timelines;
+- place, trim, move, and remove clips deterministically;
+- create tracks, transitions, markers, titles, and captions;
+- manipulate supported audio, color, and effects;
+- return a visual preview or rendered frame;
+- save with undo/recovery semantics;
+- export with progress, cancellation, and output verification; and
+- report stable object IDs rather than relying only on UI coordinates.
+
+Before an integration profile is recommended, it must pass checks for:
+
+1. license and redistribution terms;
+2. supported editor versions and operating systems;
+3. localhost binding and authentication;
+4. absence or disabling of arbitrary code execution;
+5. project backup, undo, and idempotency behavior;
+6. media-path, codec, and frame-rate compatibility;
+7. preview and visual-verification support;
+8. render progress, cancellation, and result validation; and
+9. repeatable smoke tests against a disposable project.
+
+Third-party editor binaries are never bundled. Third-party MCP code is not
+bundled by default; users install it separately. If a future distribution does
+vendor an MCP, that requires a pinned version, security review, license review,
+required notices, and review of transitive dependencies.
+
+## 10. Security and human control
+
+- The bridge is local and authenticated.
+- The mod grants at most one exclusive director lease per Minecraft instance;
+  read-only observers may connect concurrently.
+- The in-game overlay has an emergency stop that cancels actions and releases
+  all held inputs immediately.
+- The agent cannot use a tool to relax its own security configuration.
+- Commands use only the logged-in player's permissions; Replay MCP has no
+  server-console access.
+- Arbitrary shell, Java, Python, and script execution are out of scope.
+- File access is restricted to configured project, replay, render, and artifact
+  roots, with canonical-path validation.
+- Destructive project/replay operations are absent from the initial tool set.
+- Every mutation and command is auditable by request, session, project, and
+  game tick/replay time.
+- Screenshots may expose chat, player names, or server information. Observation
+  options include HUD hiding and configured redaction for persisted artifacts.
+
+## 11. End-to-end workflow
+
+```mermaid
+sequenceDiagram
+    participant A as Codex + skills
+    participant M as Replay MCP
+    participant G as Minecraft submod
+    participant R as Replay Mod
+    participant E as Optional editor MCP
+
+    A->>M: system_status
+    A->>M: project_create / project_get
+    A->>M: game_observe
+    M->>G: synchronized frame + state
+    G-->>M: image, targets, player/world state
+    M-->>A: grounded observation
+
+    A->>M: game_perform(scene setup, commands, flight)
+    M->>G: typed action batch
+    G-->>M: trace + resulting state
+    M-->>A: action results and checkpoint image
+
+    A->>M: recording_start
+    M->>G: start recording
+    G->>R: recording lifecycle
+    A->>M: game_perform(performance)
+    A->>M: recording_add_marker
+    A->>M: recording_stop
+    R-->>M: finalized replay
+
+    A->>M: replay_open
+    A->>M: replay_timeline_apply
+    A->>M: replay_preview / replay_observe
+    A->>M: render_validate
+    A->>M: render_start
+    M-->>A: job ID
+    A->>M: job_get
+    M-->>A: rendered clip artifacts
+
+    A->>M: project_export_handoff
+    M-->>A: manifest + media artifacts
+    opt Editor MCP installed
+        A->>E: import media and apply editorial plan
+        A->>E: preview, revise, and export
+        E-->>A: final video
+    end
+```
+
+## 12. Scope boundaries
+
+Included:
+
+- arbitrary player command execution for scene setup and transitions;
+- creative/spectator flight through normal inputs;
+- grounded visual plus structured observation;
+- live gameplay performance and UI/inventory interaction;
+- Replay Mod recording, playback, timeline editing, preview, and rendering;
+- project/provenance manifests and editor handoff; and
+- optional skills for independently installed editor MCPs.
+
+Not included in the core:
+
+- a Minecraft server-console bridge;
+- bypassing server permissions or anti-cheat;
+- arbitrary code or shell execution;
+- direct silent block/entity mutation outside normal gameplay or commands;
+- a bundled proprietary video editor;
+- a home-grown general-purpose non-linear editor; or
+- generative replacement of Minecraft footage.
+
+Potential later extensions:
+
+- pathfinding-assisted `navigate_to` built above normal inputs;
+- multi-client actor coordination;
+- voice, lip-sync, and dialogue cue tracks;
+- automatic highlight and continuity analysis;
+- additional timeline interchange formats;
+- editor-specific certified integration packs; and
+- remote machines through an explicit, separately secured relay rather than
+  exposing the in-game bridge.
