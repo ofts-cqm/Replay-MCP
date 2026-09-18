@@ -15,6 +15,7 @@ public final class RenderPresetRegistry {
                          String method, String container, boolean alpha, int antiAliasing) { }
     private static final Set<String> METHODS = Set.of("default", "stereoscopic", "cubemap", "equirectangular", "ods");
     private final Map<String, Preset> presets = Map.of(
+            "draft_360p", new Preset("draft_360p", 640, 360, 30, 2_000, "default", "mp4", false, 1),
             "preview", new Preset("preview", 1280, 720, 30, 6_000, "default", "mp4", false, 1),
             "high_quality", new Preset("high_quality", 1920, 1080, 60, 30_000, "default", "mp4", false, 4),
             "transparent_png", new Preset("transparent_png", 1920, 1080, 30, 0, "default", "png_sequence", true, 4));
@@ -33,6 +34,7 @@ public final class RenderPresetRegistry {
             throw new BridgeException(BridgeError.POLICY_DENIED, "arbitrary encoder commands are not accepted");
         }
         String name = request.has("preset") ? request.get("preset").getAsString() : "high_quality";
+        if (name.equals("preview_720p")) name = "preview";
         Preset base = presets.get(name);
         if (base == null) throw new BridgeException(BridgeError.INVALID_REQUEST, "unknown render preset");
         int width = integer(request, "width", base.width(), 16, 16_384);
@@ -47,12 +49,19 @@ public final class RenderPresetRegistry {
         if (!METHODS.contains(method)) throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE, "unsupported Replay Mod render method");
         if (!request.has("output")) throw new BridgeException(BridgeError.INVALID_REQUEST, "output is required");
         Path output = outputs.resolveForWrite(request.get("output").getAsString());
+        if (request.has("start_us") != request.has("end_us")) throw new BridgeException(BridgeError.INVALID_REQUEST, "start_us and end_us must be provided together");
+        if (request.has("start_us")) {
+            long start = request.get("start_us").getAsLong(), end = request.get("end_us").getAsLong();
+            if (start < 0 || end <= start) throw new BridgeException(BridgeError.INVALID_REQUEST, "render range must be positive");
+        }
         JsonObject normalized = new JsonObject();
         normalized.addProperty("preset", name); normalized.addProperty("width", width); normalized.addProperty("height", height);
         normalized.addProperty("fps", fps); normalized.addProperty("bitrate_kbps", bitrate); normalized.addProperty("method", method);
         normalized.addProperty("anti_aliasing", aa); normalized.addProperty("alpha", bool(request, "alpha", base.alpha()));
         normalized.addProperty("name_tags", bool(request, "name_tags", true)); normalized.addProperty("stabilization", bool(request, "stabilization", false));
         normalized.addProperty("output", output.toString()); normalized.addProperty("valid", true);
+        if (request.has("start_us")) normalized.addProperty("start_us", request.get("start_us").getAsLong());
+        if (request.has("end_us")) normalized.addProperty("end_us", request.get("end_us").getAsLong());
         return normalized;
     }
 

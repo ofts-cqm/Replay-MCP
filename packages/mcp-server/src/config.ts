@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { readJson, writeJsonAtomic } from "./persistence.js";
 
 export const DEVELOPMENT_GAME_DIR_ENV = "REPLAY_MCP_GAME_DIR";
@@ -9,6 +9,8 @@ export interface CliOptions {
   dataDir: string;
   gameDirs: string[];
   guessedGameDirs: string[];
+  gameDirSources?: Record<string, string>;
+  configFiles?: string[];
   discoveryIntervalMs: number;
   command: "serve" | "configure";
 }
@@ -17,6 +19,8 @@ interface PersistedConfig {
   storage_version: 1;
   game_dirs: string[];
 }
+
+interface RepositoryConfig { game_dirs?: string[]; game_dir?: string }
 
 function valueAfter(args: string[], index: number, option: string): string {
   const value = args[index + 1];
@@ -47,20 +51,50 @@ export async function resolveOptions(
   }
 
   await mkdir(dataDir, { recursive: true });
-  const persisted = await readJson<PersistedConfig>(resolve(dataDir, "config.json"), { storage_version: 1, game_dirs: [] });
+  const persistedPath = resolve(dataDir, "config.json");
+  const persisted = await readJson<PersistedConfig>(persistedPath, { storage_version: 1, game_dirs: [] });
   const fromEnvironment = (env[DEVELOPMENT_GAME_DIR_ENV] ?? "").split(delimiter).filter(Boolean).map((item) => resolve(item));
+  const workspace = env.REPLAY_MCP_WORKSPACE ?? (env === process.env ? await findReplayWorkspace(process.cwd()) : undefined) ?? env.PWD;
+  const repositoryConfigPath = workspace ? resolve(workspace, ".replay-mcp.json") : undefined;
+  const repositoryConfig = repositoryConfigPath ? await readJson<RepositoryConfig>(repositoryConfigPath, {}) : {};
+  const fromRepository = [repositoryConfig.game_dir, ...(repositoryConfig.game_dirs ?? [])].filter((item): item is string => typeof item === "string" && item.length > 0)
+    .map((item) => resolve(workspace!, item));
+  const workspaceRun = workspace ? resolve(workspace, "run") : undefined;
+  const fromWorkspaceRun = workspaceRun && await isReplayGameDir(workspaceRun) ? [workspaceRun] : [];
   const guesses = conventionalGameDirs(platform, env).map((item) => resolve(item));
   const selected = explicit.length > 0 ? explicit
     : fromEnvironment.length > 0 ? fromEnvironment
-      : persisted.game_dirs.length > 0 ? persisted.game_dirs.map((item) => resolve(item))
-        : guesses;
+      : fromRepository.length > 0 ? fromRepository
+        : fromWorkspaceRun.length > 0 ? fromWorkspaceRun
+          : persisted.game_dirs.length > 0 ? persisted.game_dirs.map((item) => resolve(item))
+            : guesses;
+  const source = explicit.length ? "cli" : fromEnvironment.length ? "environment" : fromRepository.length ? "repository_config"
+    : fromWorkspaceRun.length ? "workspace_run" : persisted.game_dirs.length ? "persisted_config" : "conventional_guess";
   return {
     dataDir,
     gameDirs: [...new Set(selected)],
-    guessedGameDirs: explicit.length || fromEnvironment.length || persisted.game_dirs.length ? [] : guesses,
+    guessedGameDirs: source === "conventional_guess" ? guesses : [],
+    gameDirSources: Object.fromEntries([...new Set(selected)].map((item) => [item, source])),
+    configFiles: [persistedPath, ...(repositoryConfigPath ? [repositoryConfigPath] : [])],
     discoveryIntervalMs,
     command,
   };
+}
+
+async function isReplayGameDir(path: string): Promise<boolean> {
+  try { return (await stat(join(path, ".replay-mcp"))).isDirectory(); }
+  catch { return false; }
+}
+
+async function findReplayWorkspace(start: string): Promise<string | undefined> {
+  let current = resolve(start);
+  while (true) {
+    if (await isReplayGameDir(join(current, "run"))) return current;
+    try { if ((await stat(join(current, ".replay-mcp.json"))).isFile()) return current; } catch { /* keep walking */ }
+    const parent = resolve(current, "..");
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 export function defaultDataDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {

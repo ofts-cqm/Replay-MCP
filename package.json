@@ -9,6 +9,8 @@
     "build": "npm run build -w replay-mcp-server",
     "bundle:plugin": "npm run bundle:plugin -w replay-mcp-server",
     "test": "npm run test -w replay-mcp-server",
+    "test:unit": "npm run test:unit -w replay-mcp-server",
+    "test:integration": "npm run test:integration -w replay-mcp-server",
     "typecheck": "npm run typecheck -w replay-mcp-server"
   },
   "engines": {

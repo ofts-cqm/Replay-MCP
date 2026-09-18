@@ -37601,10 +37601,13 @@ var StdioServerTransport = class {
   }
 };
 
+// src/cli.ts
+import { writeSync } from "node:fs";
+
 // src/config.ts
 import { homedir } from "node:os";
 import { delimiter, join as join2, resolve } from "node:path";
-import { mkdir as mkdir2 } from "node:fs/promises";
+import { mkdir as mkdir2, stat } from "node:fs/promises";
 
 // src/persistence.ts
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -37695,17 +37698,47 @@ async function resolveOptions(argv, env = process.env, platform = process.platfo
     } else if (arg.startsWith("--")) throw new Error(`unknown option: ${arg}`);
   }
   await mkdir2(dataDir, { recursive: true });
-  const persisted = await readJson(resolve(dataDir, "config.json"), { storage_version: 1, game_dirs: [] });
+  const persistedPath = resolve(dataDir, "config.json");
+  const persisted = await readJson(persistedPath, { storage_version: 1, game_dirs: [] });
   const fromEnvironment = (env[DEVELOPMENT_GAME_DIR_ENV] ?? "").split(delimiter).filter(Boolean).map((item) => resolve(item));
+  const workspace = env.REPLAY_MCP_WORKSPACE ?? (env === process.env ? await findReplayWorkspace(process.cwd()) : void 0) ?? env.PWD;
+  const repositoryConfigPath = workspace ? resolve(workspace, ".replay-mcp.json") : void 0;
+  const repositoryConfig = repositoryConfigPath ? await readJson(repositoryConfigPath, {}) : {};
+  const fromRepository = [repositoryConfig.game_dir, ...repositoryConfig.game_dirs ?? []].filter((item) => typeof item === "string" && item.length > 0).map((item) => resolve(workspace, item));
+  const workspaceRun = workspace ? resolve(workspace, "run") : void 0;
+  const fromWorkspaceRun = workspaceRun && await isReplayGameDir(workspaceRun) ? [workspaceRun] : [];
   const guesses = conventionalGameDirs(platform, env).map((item) => resolve(item));
-  const selected = explicit.length > 0 ? explicit : fromEnvironment.length > 0 ? fromEnvironment : persisted.game_dirs.length > 0 ? persisted.game_dirs.map((item) => resolve(item)) : guesses;
+  const selected = explicit.length > 0 ? explicit : fromEnvironment.length > 0 ? fromEnvironment : fromRepository.length > 0 ? fromRepository : fromWorkspaceRun.length > 0 ? fromWorkspaceRun : persisted.game_dirs.length > 0 ? persisted.game_dirs.map((item) => resolve(item)) : guesses;
+  const source = explicit.length ? "cli" : fromEnvironment.length ? "environment" : fromRepository.length ? "repository_config" : fromWorkspaceRun.length ? "workspace_run" : persisted.game_dirs.length ? "persisted_config" : "conventional_guess";
   return {
     dataDir,
     gameDirs: [...new Set(selected)],
-    guessedGameDirs: explicit.length || fromEnvironment.length || persisted.game_dirs.length ? [] : guesses,
+    guessedGameDirs: source === "conventional_guess" ? guesses : [],
+    gameDirSources: Object.fromEntries([...new Set(selected)].map((item) => [item, source])),
+    configFiles: [persistedPath, ...repositoryConfigPath ? [repositoryConfigPath] : []],
     discoveryIntervalMs,
     command
   };
+}
+async function isReplayGameDir(path) {
+  try {
+    return (await stat(join2(path, ".replay-mcp"))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+async function findReplayWorkspace(start) {
+  let current = resolve(start);
+  while (true) {
+    if (await isReplayGameDir(join2(current, "run"))) return current;
+    try {
+      if ((await stat(join2(current, ".replay-mcp.json"))).isFile()) return current;
+    } catch {
+    }
+    const parent = resolve(current, "..");
+    if (parent === current) return void 0;
+    current = parent;
+  }
 }
 function defaultDataDir(platform, env) {
   const home = env.HOME ?? env.USERPROFILE ?? homedir();
@@ -38054,18 +38087,26 @@ var BridgeClient = class _BridgeClient extends EventEmitter {
 
 // src/bridge/discovery.ts
 var DiscoveryManager = class {
-  gameDirs;
+  #baseGameDirs;
+  #configFiles;
+  gameDirSources;
   guessedGameDirs;
   clients = /* @__PURE__ */ new Map();
+  diagnostics = {};
   #audit;
   #intervalMs;
   #timer;
   #running = false;
-  constructor(gameDirs, guessedGameDirs, intervalMs, audit) {
-    this.gameDirs = gameDirs.map((item) => resolve2(item));
+  constructor(gameDirs, guessedGameDirs, intervalMs, audit, options = {}) {
+    this.#baseGameDirs = gameDirs.map((item) => resolve2(item));
+    this.#configFiles = options.configFiles ?? [];
+    this.gameDirSources = { ...options.gameDirSources ?? {} };
     this.guessedGameDirs = guessedGameDirs.map((item) => resolve2(item));
     this.#intervalMs = intervalMs;
     this.#audit = audit;
+  }
+  get gameDirs() {
+    return [.../* @__PURE__ */ new Set([...this.#baseGameDirs, ...Object.keys(this.gameDirSources)])];
   }
   async start() {
     await this.discoverOnce();
@@ -38078,9 +38119,18 @@ var DiscoveryManager = class {
     if (this.#running) return;
     this.#running = true;
     try {
+      await this.#reloadConfiguredDirs();
       const seen = /* @__PURE__ */ new Set();
       for (const gameDir of this.gameDirs) {
-        for (const descriptor of await scanDescriptors(gameDir)) {
+        let descriptors;
+        try {
+          descriptors = await scanDescriptors(gameDir);
+        } catch (error62) {
+          this.diagnostics[gameDir] = `scan_failed: ${error62 instanceof Error ? error62.message : String(error62)}`;
+          continue;
+        }
+        this.diagnostics[gameDir] = descriptors.length ? `${descriptors.length} valid descriptor(s)` : "no valid live descriptor found";
+        for (const descriptor of descriptors) {
           seen.add(descriptor.instanceId);
           if (this.clients.get(descriptor.instanceId)?.connected) continue;
           try {
@@ -38092,8 +38142,10 @@ var DiscoveryManager = class {
               if (this.clients.get(descriptor.instanceId) === client) this.clients.delete(descriptor.instanceId);
             });
             this.clients.set(descriptor.instanceId, client);
+            this.diagnostics[gameDir] = `connected to ${descriptor.instanceId}`;
             await this.#audit.append("bridge.connected", { instance_id: descriptor.instanceId, process_id: descriptor.processId });
           } catch (error62) {
+            this.diagnostics[gameDir] = `descriptor rejected: ${error62 instanceof Error ? error62.message : String(error62)}`;
             await this.#audit.append("bridge.discovery_failed", {
               instance_id: descriptor.instanceId,
               message: error62 instanceof Error ? error62.message : String(error62)
@@ -38126,6 +38178,20 @@ var DiscoveryManager = class {
     if (this.#timer) clearInterval(this.#timer);
     await Promise.allSettled([...this.clients.values()].map(async (client) => await client.close()));
     this.clients.clear();
+  }
+  async #reloadConfiguredDirs() {
+    for (const configPath of this.#configFiles) {
+      try {
+        const parsed = JSON.parse(await readFile2(configPath, "utf8"));
+        const parent = resolve2(configPath, "..");
+        const values = [parsed.game_dir, ...Array.isArray(parsed.game_dirs) ? parsed.game_dirs : []];
+        for (const value of values) if (typeof value === "string" && value.length) {
+          const gameDir = resolve2(parent, value);
+          this.gameDirSources[gameDir] = configPath.endsWith(".replay-mcp.json") ? "repository_config_hot_reload" : "persisted_config_hot_reload";
+        }
+      } catch {
+      }
+    }
   }
 };
 var SidecarError = class extends Error {
@@ -38294,11 +38360,15 @@ var JobStore = class {
   #attached = /* @__PURE__ */ new WeakSet();
   #aborters = /* @__PURE__ */ new Map();
   #sessionId;
-  constructor(dataDir, artifacts, audit, sessionId) {
+  #jobStarted;
+  #jobFinished;
+  constructor(dataDir, artifacts, audit, sessionId, hooks = {}) {
     this.#jobs = new JsonCollection(dataDir, "jobs/index.json");
     this.#artifacts = artifacts;
     this.#audit = audit;
     this.#sessionId = sessionId;
+    this.#jobStarted = hooks.started;
+    this.#jobFinished = hooks.finished;
   }
   async load() {
     await this.#jobs.load();
@@ -38343,9 +38413,18 @@ var JobStore = class {
   async update(id, patch) {
     const existing = this.#jobs.get(id);
     if (!existing) throw new Error(`job ${id} not found`);
-    const updated = { ...existing, ...patch, id, updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+    const terminal = patch.status !== void 0 && ["completed", "failed", "cancelled"].includes(patch.status);
+    const becameTerminal = terminal && !["completed", "failed", "cancelled"].includes(existing.status);
+    const becameRunning = patch.status === "running" && existing.status === "queued";
+    const now = /* @__PURE__ */ new Date();
+    const updated = { ...existing, ...patch, id, updated_at: now.toISOString(), ...becameTerminal ? { duration_ms: Math.max(0, now.getTime() - Date.parse(existing.created_at)) } : {} };
     await this.#jobs.set(updated);
-    if (["completed", "failed", "cancelled"].includes(updated.status)) this.#aborters.delete(id);
+    if (becameRunning && existing.instance_id) this.#jobStarted?.(existing.instance_id, id);
+    if (becameTerminal) {
+      this.#aborters.delete(id);
+      if (existing.instance_id) this.#jobFinished?.(existing.instance_id, id);
+      await this.#audit.append("job.finished", { job_id: id, kind: updated.kind, status: updated.status, duration_ms: updated.duration_ms });
+    }
     return updated;
   }
   createAbortController(jobId) {
@@ -38358,6 +38437,7 @@ var JobStore = class {
     this.#attached.add(client);
     client.on("event", (method, params) => {
       if (method.startsWith("render.")) void this.#bridgeEvent(client, method, params);
+      else if (method === "recording.finalization") void this.#finalizationEvent(client, params);
       else if (method === "recording.changed") void this.#recordingEvent(client, params);
     });
   }
@@ -38429,6 +38509,33 @@ var JobStore = class {
       await this.update(job.id, { status: "failed", failure: { code: "artifact_verification_failed", message: error62 instanceof Error ? error62.message : String(error62) } });
     }
   }
+  async #finalizationEvent(client, params) {
+    const bridgeId = typeof params.job_id === "string" ? params.job_id : void 0;
+    if (!bridgeId) return;
+    const job = this.list().find((item) => item.bridge_job_id === bridgeId && item.instance_id === client.descriptor.instanceId);
+    if (!job) return;
+    if (params.status === "running") {
+      await this.update(job.id, { progress: typeof params.progress === "number" ? params.progress : job.progress, result: { ...job.result, ...params } });
+      return;
+    }
+    let artifacts = [];
+    if (params.artifact) {
+      try {
+        artifacts = [await this.#artifacts.register(params.artifact, client.descriptor.instanceId, client.hello?.allowed_artifact_roots ?? [])];
+      } catch (error62) {
+        await this.update(job.id, { status: "failed", failure: { code: "artifact_verification_failed", message: error62 instanceof Error ? error62.message : String(error62) } });
+        return;
+      }
+    }
+    const completed = params.status === "completed" && artifacts.length === 1;
+    await this.update(job.id, {
+      status: completed ? "completed" : "failed",
+      progress: completed ? 1 : job.progress,
+      result_artifact_ids: artifacts.map((artifact) => artifact.id),
+      result: { ...job.result, ...params },
+      ...completed ? {} : { failure: { code: "recording_recoverable", message: typeof params.error === "string" ? params.error : "recording finalization requires recovery" } }
+    });
+  }
 };
 
 // src/lease/controller.ts
@@ -38455,6 +38562,7 @@ var LeaseController = class {
       client,
       active: 0,
       lastActivity: Date.now(),
+      jobs: /* @__PURE__ */ new Set(),
       timer: setInterval(() => {
         void this.#heartbeat(client.descriptor.instanceId);
       }, intervalMs)
@@ -38502,6 +38610,20 @@ var LeaseController = class {
   async close() {
     await Promise.allSettled([...this.#owned.values()].map(async ({ client }) => await this.release(client)));
   }
+  holdJob(instanceId, jobId) {
+    const owned = this.#owned.get(instanceId);
+    if (owned) {
+      owned.jobs.add(jobId);
+      owned.lastActivity = Date.now();
+    }
+  }
+  releaseJob(instanceId, jobId) {
+    const owned = this.#owned.get(instanceId);
+    if (owned) {
+      owned.jobs.delete(jobId);
+      owned.lastActivity = Date.now();
+    }
+  }
   async #heartbeat(instanceId) {
     const owned = this.#owned.get(instanceId);
     if (!owned) return;
@@ -38509,7 +38631,7 @@ var LeaseController = class {
       const lease = LeaseSchema.parse(await owned.client.call("lease.heartbeat", {
         lease_id: owned.lease.lease_id,
         fence: owned.lease.fence,
-        active: owned.active > 0 || Date.now() - owned.lastActivity < 2e3
+        active: owned.active > 0 || owned.jobs.size > 0 || Date.now() - owned.lastActivity < 2e3
       }, { deadlineMs: Math.max(2e3, Math.floor((owned.client.hello?.lease_policy.ttl_ms ?? 15e3) / 2)) }));
       owned.lease = lease;
     } catch (error62) {
@@ -38770,10 +38892,16 @@ var ReplayMcpRuntime = class {
     this.options = options;
     this.audit = new AuditLog(options.dataDir);
     this.artifacts = new ArtifactStore(options.dataDir);
-    this.jobs = new JobStore(options.dataDir, this.artifacts, this.audit, this.sessionId);
-    this.projects = new ProjectStore(options.dataDir, this.artifacts);
-    this.discovery = new DiscoveryManager(options.gameDirs, options.guessedGameDirs, options.discoveryIntervalMs, this.audit);
     this.leases = new LeaseController(this.audit);
+    this.jobs = new JobStore(options.dataDir, this.artifacts, this.audit, this.sessionId, {
+      started: (instanceId, jobId) => this.leases.holdJob(instanceId, jobId),
+      finished: (instanceId, jobId) => this.leases.releaseJob(instanceId, jobId)
+    });
+    this.projects = new ProjectStore(options.dataDir, this.artifacts);
+    this.discovery = new DiscoveryManager(options.gameDirs, options.guessedGameDirs, options.discoveryIntervalMs, this.audit, {
+      ...options.configFiles ? { configFiles: options.configFiles } : {},
+      ...options.gameDirSources ? { gameDirSources: options.gameDirSources } : {}
+    });
   }
   async start() {
     if (this.#started) return;
@@ -38935,7 +39063,9 @@ function registerTools(server, runtime) {
       session_id: runtime.sessionId,
       audit_resource: `replay-mcp://audit/${runtime.sessionId}`,
       state: instances.length ? "online" : "offline",
-      searched_game_dirs: runtime.options.gameDirs,
+      searched_game_dirs: runtime.discovery.gameDirs,
+      game_dir_sources: runtime.discovery.gameDirSources,
+      discovery_diagnostics: runtime.discovery.diagnostics,
       guessed_game_dirs: runtime.options.guessedGameDirs,
       data_dir: runtime.options.dataDir,
       instances,
@@ -38998,6 +39128,7 @@ function registerTools(server, runtime) {
   }, safe(async ({ job_id }, signal) => {
     const job = runtime.jobs.get(job_id);
     if (!job) throw new SidecarError("job_not_found", `job ${job_id} was not found`);
+    if (!job.cancellable || !["queued", "running"].includes(job.status)) return ok(`Job is ${job.status}.`, { job });
     let updated;
     if (job.bridge_backed && job.instance_id && job.bridge_job_id) {
       const { result } = await runtime.mutate("render.cancel", { instance_id: job.instance_id, job_id: job.bridge_job_id }, signal);
@@ -39146,9 +39277,7 @@ function registerTools(server, runtime) {
     let job;
     if (data.status === "pending_finalization") {
       job = await runtime.jobs.create("analysis", {
-        status: "running",
         cancellable: false,
-        bridge_backed: true,
         instance_id: client.descriptor.instanceId,
         ...context.project_id ? { project_id: context.project_id } : {},
         result: { purpose: "recording_finalization", ...context, take_id: data.take_id ?? context.take_id }
@@ -39159,6 +39288,22 @@ function registerTools(server, runtime) {
       result: data,
       ...job ? { finalization_job: job } : {}
     });
+  }));
+  server.registerTool("recording_finalize_and_open", {
+    title: "Finalize and open recording",
+    description: "Intentionally disconnect the current world, wait for the connection-scoped replay to finalize, and open an immutable working copy.",
+    inputSchema: external_exports.object({ ...instance, request_id: requestId, finalization_job_id: external_exports.uuid(), timeout_ms: external_exports.number().int().min(5e3).max(3e5).default(12e4) }),
+    annotations: MUTATE
+  }, safe(async (args, signal) => {
+    const pending = runtime.jobs.get(args.finalization_job_id);
+    if (!pending || pending.kind !== "analysis" || pending.status !== "queued" || pending.result?.purpose !== "recording_finalization") {
+      throw new SidecarError("conflict", "finalization_job_id is not a pending recording finalization job");
+    }
+    const client = runtime.client(args.instance_id);
+    if (pending.instance_id !== client.descriptor.instanceId) throw new SidecarError("conflict", "finalization job belongs to another Minecraft instance");
+    const { result } = await runtime.mutate("recording.finalize_and_open", args, signal);
+    const updated = await runtime.jobs.registerBridgeJob(pending, client, objectResult(result));
+    return ok("Recording finalization and replay opening started; follow the job to a terminal state.", { job: updated });
   }));
   server.registerTool("recording_add_marker", {
     title: "Add recording marker",
@@ -39245,28 +39390,62 @@ function registerTools(server, runtime) {
       shot_id: external_exports.string().optional(),
       start_us: external_exports.number().int().nonnegative().optional(),
       end_us: external_exports.number().int().positive().optional(),
+      start_frame: external_exports.number().int().nonnegative().optional(),
+      end_frame: external_exports.number().int().positive().optional(),
+      fps: external_exports.number().positive().max(240).default(30),
       output_mode: external_exports.enum(["video", "contact_sheet", "frames"]).default("contact_sheet"),
       frames: external_exports.number().int().min(1).max(64).default(12),
       output: external_exports.string().optional(),
-      preset: external_exports.string().optional()
-    }).refine((value) => value.start_us === void 0 || value.end_us === void 0 || value.end_us > value.start_us, "end_us must be greater than start_us"),
+      preset: external_exports.string().optional(),
+      width: external_exports.number().int().min(16).max(7680).optional(),
+      height: external_exports.number().int().min(16).max(4320).optional()
+    }).superRefine(validateTimeOrFrameRange),
     annotations: MUTATE
   }, safe(async (args, signal) => {
+    const normalized = normalizeOutputRange(args);
     const client = runtime.client(args.instance_id);
     const job = await runtime.jobs.create("preview", { instance_id: client.descriptor.instanceId, ...args.project_id ? { project_id: args.project_id } : {} });
     if (args.output_mode === "video") {
-      const renderArgs = { ...args, preset: args.preset ?? "preview_720p", output: args.output ?? `preview-${job.id}.mp4` };
+      const renderArgs = { ...normalized, preset: args.preset ?? "draft_360p", output: args.output ?? `preview-${job.id}.mp4` };
       const { result } = await runtime.mutate("render.start", renderArgs, signal);
       const updated = await runtime.jobs.registerBridgeJob(job, client, objectResult(result));
       return ok("Low-resolution video preview started.", { job: updated });
     }
     await runtime.jobs.update(job.id, { status: "running" });
     const controller = runtime.jobs.createAbortController(job.id);
-    void runSampledPreview(runtime, client.descriptor.instanceId, job.id, args, controller.signal).catch(async (error62) => {
+    void runSampledPreview(runtime, client.descriptor.instanceId, job.id, normalized, controller.signal, false).catch(async (error62) => {
       if (runtime.jobs.get(job.id)?.status === "cancelled") return;
       await runtime.jobs.update(job.id, { status: "failed", failure: { code: errorCode(error62), message: errorMessage(error62) } });
     });
     return ok("Sampled preview started.", { job: runtime.jobs.get(job.id) });
+  }));
+  server.registerTool("replay_validate_range", {
+    title: "Validate replay shot range",
+    description: "Evaluate the authored output timeline with settled seeks, chunk readiness, camera collision, subject distance, and line-of-sight checks.",
+    inputSchema: external_exports.object({
+      ...instance,
+      request_id: requestId,
+      start_us: external_exports.number().int().nonnegative().optional(),
+      end_us: external_exports.number().int().positive().optional(),
+      start_frame: external_exports.number().int().nonnegative().optional(),
+      end_frame: external_exports.number().int().positive().optional(),
+      fps: external_exports.number().positive().max(240).default(30),
+      frames: external_exports.number().int().min(2).max(64).default(8),
+      subject_entity_id: external_exports.number().int().optional(),
+      chunk_radius: external_exports.number().int().min(0).max(4).default(1),
+      chunk_timeout_ms: external_exports.number().int().min(0).max(3e4).default(5e3)
+    }).superRefine(validateTimeOrFrameRange),
+    annotations: MUTATE
+  }, safe(async (args) => {
+    const normalized = normalizeOutputRange(args);
+    const client = runtime.client(args.instance_id);
+    const job = await runtime.jobs.create("analysis", { instance_id: client.descriptor.instanceId, result: { purpose: "replay_range_validation" } });
+    await runtime.jobs.update(job.id, { status: "running" });
+    const controller = runtime.jobs.createAbortController(job.id);
+    void runSampledPreview(runtime, client.descriptor.instanceId, job.id, normalized, controller.signal, true).catch(async (error62) => {
+      if (runtime.jobs.get(job.id)?.status !== "cancelled") await runtime.jobs.update(job.id, { status: "failed", failure: { code: errorCode(error62), message: errorMessage(error62) } });
+    });
+    return ok("Replay range validation started.", { job: runtime.jobs.get(job.id) });
   }));
   server.registerTool("render_presets", {
     title: "List render presets",
@@ -39283,9 +39462,12 @@ function registerTools(server, runtime) {
   server.registerTool("render_start", {
     title: "Start render",
     description: "Start a persistent Replay Mod video render job for a shot, range, or project batch.",
-    inputSchema: external_exports.object({ ...instance, request_id: requestId, project_id: external_exports.string().optional(), shot_id: external_exports.string().optional(), preset: external_exports.string().optional(), output: external_exports.string().min(1), width: external_exports.number().int().positive().optional(), height: external_exports.number().int().positive().optional(), fps: external_exports.number().positive().optional(), start_us: external_exports.number().int().nonnegative().optional(), end_us: external_exports.number().int().positive().optional() }).catchall(external_exports.unknown()),
+    inputSchema: external_exports.object({ ...instance, request_id: requestId, project_id: external_exports.string().optional(), shot_id: external_exports.string().optional(), preset: external_exports.string().optional(), output: external_exports.string().min(1), width: external_exports.number().int().positive().optional(), height: external_exports.number().int().positive().optional(), fps: external_exports.number().positive().optional(), start_us: external_exports.number().int().nonnegative().optional(), end_us: external_exports.number().int().positive().optional(), validation_job_id: external_exports.uuid().optional() }).catchall(external_exports.unknown()),
     annotations: MUTATE
-  }, safe(async (args, signal) => startRenderJob(runtime, "render", "render.start", args, signal)));
+  }, safe(async (args, signal) => {
+    await requireRenderValidation(runtime, args);
+    return await startRenderJob(runtime, "render", "render.start", args, signal);
+  }));
   server.registerTool("render_still", {
     title: "Render high-quality still",
     description: "Start a persistent exact-time still render job for framing or final review.",
@@ -39433,58 +39615,133 @@ async function startRenderJob(runtime, kind, method, args, signal) {
     throw error62;
   }
 }
-async function runSampledPreview(runtime, instanceId, jobId, args, signal) {
+async function runSampledPreview(runtime, instanceId, jobId, args, signal, validationOnly) {
   const client = runtime.client(instanceId);
   const frameCount = typeof args.frames === "number" ? args.frames : 12;
-  const startUs = typeof args.start_us === "number" ? args.start_us : void 0;
-  const endUs = typeof args.end_us === "number" ? args.end_us : void 0;
+  let startUs = typeof args.start_us === "number" ? args.start_us : void 0;
+  let endUs = typeof args.end_us === "number" ? args.end_us : void 0;
+  const timeline = objectResult(await client.call("timeline.get", {}));
+  const timelineRevision = typeof timeline.revision === "string" ? timeline.revision : "unknown";
+  if (startUs === void 0 || endUs === void 0) {
+    startUs = 0;
+    endUs = timelineDurationUs(timeline);
+    if (endUs <= 0) throw new SidecarError("invalid_request", "the authored timeline has no positive output duration");
+  }
   const artifacts = [];
+  const samples = [];
+  const labels = [];
   const metadata = {
     ...typeof args.project_id === "string" ? { project_id: args.project_id } : {},
     ...typeof args.shot_id === "string" ? { shot_id: args.shot_id } : {},
     provenance: { tool: "replay_preview" }
   };
-  if (startUs !== void 0 && endUs !== void 0) {
-    for (let index = 0; index < frameCount; index++) {
-      if (signal.aborted) throw new SidecarError("cancelled", "preview sampling was cancelled");
-      const fraction = frameCount === 1 ? 0 : index / (frameCount - 1);
-      const timeUs = Math.round(startUs + (endUs - startUs) * fraction);
-      await runtime.leases.mutate(client, "replay.playback", {
-        operation: "seek",
-        time_us: timeUs,
-        request_id: `${String(args.request_id ?? jobId)}:seek:${index}`
-      }, signal);
-      const frame = await client.call("observation.framebuffer", { view: "clean" }, { deadlineMs: 3e4, signal });
-      artifacts.push(...await runtime.registerArtifacts(frame, client, { ...metadata, provenance: { ...metadata.provenance, sample_time_us: timeUs } }));
-      await runtime.jobs.update(jobId, { progress: (index + 1) / frameCount });
-    }
-  } else {
-    const result = await runtime.leases.mutate(client, "observation.motion_burst", {
-      frames: frameCount,
+  for (let index = 0; index < frameCount; index++) {
+    if (signal.aborted) throw new SidecarError("cancelled", "preview sampling was cancelled");
+    const fraction = frameCount === 1 ? 0 : index / (frameCount - 1);
+    const timeUs = Math.round(startUs + (endUs - startUs) * fraction);
+    const result = objectResult(await runtime.leases.mutate(client, "replay.preview_sample", {
+      output_time_us: timeUs,
       view: "clean",
-      request_id: String(args.request_id ?? crypto.randomUUID())
-    }, signal);
-    artifacts.push(...await runtime.registerArtifacts(result, client, metadata));
+      subject_entity_id: args.subject_entity_id,
+      chunk_radius: args.chunk_radius,
+      chunk_timeout_ms: args.chunk_timeout_ms,
+      request_id: `${String(args.request_id ?? jobId)}:sample:${index}`
+    }, signal));
+    const registered = await runtime.registerArtifacts(result, client, { ...metadata, provenance: { ...metadata.provenance, output_time_us: timeUs, replay_time_us: result.replay_time_us } });
+    artifacts.push(...registered);
+    const validation = isObject3(result.validation) ? result.validation : {};
+    samples.push({ output_time_us: result.output_time_us ?? timeUs, replay_time_us: result.replay_time_us, validation });
+    labels.push(`${formatTime(Number(result.output_time_us ?? timeUs))} out / ${formatTime(Number(result.replay_time_us ?? 0))} replay`);
+    await runtime.jobs.update(jobId, { progress: (index + 1) / frameCount });
   }
   if (signal.aborted || runtime.jobs.get(jobId)?.status === "cancelled") return;
+  const errors = samples.flatMap((sample) => isObject3(sample.validation) && Array.isArray(sample.validation.errors) ? sample.validation.errors : []);
+  const warnings = samples.flatMap((sample) => isObject3(sample.validation) && Array.isArray(sample.validation.warnings) ? sample.validation.warnings : []);
   let output2 = artifacts;
-  if (args.output_mode === "contact_sheet" && artifacts.length) output2 = [await buildContactSheet(runtime, artifacts, `preview-${jobId}`)];
-  await runtime.jobs.update(jobId, { status: "completed", progress: 1, result_artifact_ids: output2.map((item) => item.id), result: { sampled_frame_ids: artifacts.map((item) => item.id), output_mode: args.output_mode } });
+  if (!validationOnly && args.output_mode === "contact_sheet" && artifacts.length) output2 = [await buildContactSheet(runtime, artifacts, `preview-${jobId}`, labels)];
+  await runtime.jobs.update(jobId, {
+    status: "completed",
+    progress: 1,
+    result_artifact_ids: output2.map((item) => item.id),
+    warnings: [...new Set(warnings.map(String))],
+    result: {
+      purpose: validationOnly ? "replay_range_validation" : "replay_preview",
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      samples,
+      start_us: startUs,
+      end_us: endUs,
+      timeline_revision: timelineRevision,
+      sampled_frame_ids: artifacts.map((item) => item.id),
+      output_mode: validationOnly ? "validation" : args.output_mode
+    }
+  });
 }
-async function buildContactSheet(runtime, frames, name) {
+async function buildContactSheet(runtime, frames, name, labels = []) {
   const columns = Math.min(4, frames.length);
   const rows = Math.ceil(frames.length / columns);
   const cellWidth = 320, cellHeight = 180;
   const images = await Promise.all(frames.map(async (frame, index) => {
     const data = (await readFile5(frame.path)).toString("base64");
     const x = index % columns * cellWidth, y = Math.floor(index / columns) * cellHeight;
-    return `<image x="${x}" y="${y}" width="${cellWidth}" height="${cellHeight}" preserveAspectRatio="xMidYMid meet" href="data:${frame.mime_type};base64,${data}"/><text x="${x + 8}" y="${y + 18}" fill="white" stroke="black" paint-order="stroke">${index + 1}</text>`;
+    const label = escapeXml(labels[index] ?? String(index + 1));
+    return `<image x="${x}" y="${y}" width="${cellWidth}" height="${cellHeight}" preserveAspectRatio="xMidYMid meet" href="data:${frame.mime_type};base64,${data}"/><text x="${x + 8}" y="${y + 18}" fill="white" stroke="black" paint-order="stroke">${label}</text>`;
   }));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${columns * cellWidth}" height="${rows * cellHeight}" viewBox="0 0 ${columns * cellWidth} ${rows * cellHeight}"><rect width="100%" height="100%" fill="black"/>${images.join("")}</svg>`;
   await mkdir4(runtime.artifacts.localRoot, { recursive: true });
   const path = join7(runtime.artifacts.localRoot, `${name}.svg`);
   await writeFile2(path, svg, "utf8");
   return await runtime.artifacts.registerLocal(path, "image/svg+xml", { provenance: { source_frame_ids: frames.map((item) => item.id) } });
+}
+function validateTimeOrFrameRange(value, context) {
+  const hasTime = value.start_us !== void 0 || value.end_us !== void 0;
+  const hasFrames = value.start_frame !== void 0 || value.end_frame !== void 0;
+  if (hasTime && hasFrames) context.addIssue({ code: "custom", message: "use either microseconds or frames, not both" });
+  if (hasTime && (typeof value.start_us !== "number" || typeof value.end_us !== "number" || value.end_us <= value.start_us)) context.addIssue({ code: "custom", message: "start_us and end_us must form a positive range" });
+  if (hasFrames && (typeof value.start_frame !== "number" || typeof value.end_frame !== "number" || value.end_frame <= value.start_frame)) context.addIssue({ code: "custom", message: "start_frame and end_frame must form a positive range" });
+}
+function normalizeOutputRange(args) {
+  const normalized = { ...args };
+  if (typeof args.start_frame === "number" && typeof args.end_frame === "number") {
+    const fps = typeof args.fps === "number" ? args.fps : 30;
+    normalized.start_us = Math.round(args.start_frame * 1e6 / fps);
+    normalized.end_us = Math.round(args.end_frame * 1e6 / fps);
+  }
+  delete normalized.start_frame;
+  delete normalized.end_frame;
+  return normalized;
+}
+function timelineDurationUs(timeline) {
+  let maximum = 0;
+  if (!isObject3(timeline.tracks)) return maximum;
+  for (const frames of Object.values(timeline.tracks)) if (Array.isArray(frames)) for (const frame of frames) {
+    if (isObject3(frame) && typeof frame.time_us === "number") maximum = Math.max(maximum, frame.time_us);
+  }
+  return maximum;
+}
+async function requireRenderValidation(runtime, args) {
+  const preset = args.preset === "preview_720p" ? "preview" : args.preset ?? "high_quality";
+  if (preset === "preview" || preset === "draft_360p") return;
+  if (typeof args.validation_job_id !== "string") throw new SidecarError("invalid_request", "final-quality renders require validation_job_id from replay_validate_range");
+  const validation = runtime.jobs.get(args.validation_job_id);
+  if (!validation || validation.status !== "completed" || validation.result?.purpose !== "replay_range_validation" || validation.result.valid !== true) {
+    throw new SidecarError("conflict", "validation_job_id is not a successful replay range validation");
+  }
+  const { result } = await runtime.read("timeline.get", args);
+  const timeline = objectResult(result);
+  if (validation.result.timeline_revision !== timeline.revision) throw new SidecarError("conflict", "the replay timeline changed after range validation");
+  const expectedStart = typeof args.start_us === "number" ? args.start_us : 0;
+  const expectedEnd = typeof args.end_us === "number" ? args.end_us : timelineDurationUs(timeline);
+  if (validation.result.start_us !== expectedStart || validation.result.end_us !== expectedEnd) {
+    throw new SidecarError("conflict", "render range does not match the validated output range");
+  }
+}
+function formatTime(timeUs) {
+  return `${(timeUs / 1e6).toFixed(2)}s`;
+}
+function escapeXml(value) {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[character]);
 }
 function ok(message, structuredContent, extra = []) {
   return { content: [{ type: "text", text: message }, ...extra], structuredContent };
@@ -39604,7 +39861,7 @@ async function main() {
     options = await resolveOptions(process.argv.slice(2));
   } catch (error62) {
     if (error62 instanceof Error && error62.message === "help_requested") {
-      process.stderr.write(`${HELP}
+      await writeStderr(`${HELP}
 `);
       return;
     }
@@ -39614,23 +39871,31 @@ async function main() {
     const explicitlyConfigured = process.argv.slice(2).includes("--game-dir");
     if (!explicitlyConfigured) throw new Error("configure requires at least one --game-dir");
     await persistGameDirs(options.dataDir, options.gameDirs);
-    process.stderr.write(`Saved ${options.gameDirs.length} Minecraft game director${options.gameDirs.length === 1 ? "y" : "ies"}.
+    await writeStderr(`Saved ${options.gameDirs.length} Minecraft game director${options.gameDirs.length === 1 ? "y" : "ies"}.
 `);
     return;
   }
   const built = await buildServer(options);
   const transport = new StdioServerTransport();
+  const keepAlive = setInterval(() => void 0, 6e4);
   let shuttingDown = false;
+  let finishShutdown;
+  const shutdownFinished = new Promise((resolve5) => {
+    finishShutdown = resolve5;
+  });
   const shutdown = async (reason) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    process.stderr.write(`Replay MCP sidecar shutting down (${reason}).
+    await writeStderr(`Replay MCP sidecar shutting down (${reason}).
 `);
     try {
       await built.close();
     } catch (error62) {
-      process.stderr.write(`${error62 instanceof Error ? error62.stack ?? error62.message : String(error62)}
+      await writeStderr(`${error62 instanceof Error ? error62.stack ?? error62.message : String(error62)}
 `);
+    } finally {
+      clearInterval(keepAlive);
+      finishShutdown();
     }
   };
   process.once("SIGINT", () => {
@@ -39648,12 +39913,17 @@ async function main() {
     void shutdown("transport closed");
   };
   await built.server.connect(transport);
+  process.stdin.resume();
+  await shutdownFinished;
 }
-main().catch((error62) => {
-  process.stderr.write(`Replay MCP sidecar failed: ${error62 instanceof Error ? error62.stack ?? error62.message : String(error62)}
+await main().catch(async (error62) => {
+  await writeStderr(`Replay MCP sidecar failed: ${error62 instanceof Error ? error62.stack ?? error62.message : String(error62)}
 `);
   process.exitCode = 1;
 });
+async function writeStderr(value) {
+  writeSync(process.stderr.fd, value);
+}
 /*! Bundled license information:
 
 @modelcontextprotocol/server/dist/src-CX2iR2pK.mjs:

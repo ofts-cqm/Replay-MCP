@@ -20,6 +20,10 @@ class RenderPresetRegistryTest {
         assertEquals(BridgeError.POLICY_DENIED, assertThrows(BridgeException.class, () -> registry.validate(traversal)).error());
         JsonObject safe = new JsonObject(); safe.addProperty("preset", "preview"); safe.addProperty("output", "shots/x.mp4");
         assertTrue(registry.validate(safe).get("valid").getAsBoolean());
+        JsonObject legacy = safe.deepCopy(); legacy.addProperty("preset", "preview_720p");
+        assertEquals("preview", registry.validate(legacy).get("preset").getAsString());
+        JsonObject draft = safe.deepCopy(); draft.addProperty("preset", "draft_360p");
+        assertEquals(640, registry.validate(draft).get("width").getAsInt());
 
         JsonObject unsupportedAa = safe.deepCopy(); unsupportedAa.addProperty("anti_aliasing", 16);
         assertEquals(BridgeError.INVALID_REQUEST, assertThrows(BridgeException.class, () -> registry.validate(unsupportedAa)).error());

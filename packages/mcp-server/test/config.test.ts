@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -34,5 +34,22 @@ describe("configuration precedence", () => {
     const explicit = join(root, "explicit");
     expect((await resolveOptions([], { ...linuxEnvironment, REPLAY_MCP_DATA_DIR: explicit }, "linux")).dataDir).toBe(explicit);
     expect(defaultDataDir("darwin", { HOME: root })).toBe(join(root, "Library", "Application Support", "Replay MCP"));
+  });
+
+  it("prefers repository configuration and then a prepared workspace run directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "replay-mcp-workspace-"));
+    const dataDir = join(root, "data");
+    const configured = join(root, "custom-game");
+    await writeFile(join(root, ".replay-mcp.json"), JSON.stringify({ game_dirs: ["custom-game"] }));
+    let resolved = await resolveOptions(["--data-dir", dataDir], { REPLAY_MCP_WORKSPACE: root }, "linux");
+    expect(resolved.gameDirs).toEqual([configured]);
+    expect(resolved.gameDirSources?.[configured]).toBe("repository_config");
+
+    await writeFile(join(root, ".replay-mcp.json"), "{}");
+    const run = join(root, "run");
+    await mkdir(join(run, ".replay-mcp"), { recursive: true });
+    resolved = await resolveOptions(["--data-dir", dataDir], { REPLAY_MCP_WORKSPACE: root }, "linux");
+    expect(resolved.gameDirs).toEqual([run]);
+    expect(resolved.gameDirSources?.[run]).toBe("workspace_run");
   });
 });

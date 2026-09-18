@@ -24,10 +24,16 @@ export class ReplayMcpRuntime {
     this.options = options;
     this.audit = new AuditLog(options.dataDir);
     this.artifacts = new ArtifactStore(options.dataDir);
-    this.jobs = new JobStore(options.dataDir, this.artifacts, this.audit, this.sessionId);
-    this.projects = new ProjectStore(options.dataDir, this.artifacts);
-    this.discovery = new DiscoveryManager(options.gameDirs, options.guessedGameDirs, options.discoveryIntervalMs, this.audit);
     this.leases = new LeaseController(this.audit);
+    this.jobs = new JobStore(options.dataDir, this.artifacts, this.audit, this.sessionId, {
+      started: (instanceId, jobId) => this.leases.holdJob(instanceId, jobId),
+      finished: (instanceId, jobId) => this.leases.releaseJob(instanceId, jobId),
+    });
+    this.projects = new ProjectStore(options.dataDir, this.artifacts);
+    this.discovery = new DiscoveryManager(options.gameDirs, options.guessedGameDirs, options.discoveryIntervalMs, this.audit, {
+      ...(options.configFiles ? { configFiles: options.configFiles } : {}),
+      ...(options.gameDirSources ? { gameDirSources: options.gameDirSources } : {}),
+    });
   }
 
   async start(): Promise<void> {

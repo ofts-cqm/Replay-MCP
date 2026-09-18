@@ -46,9 +46,12 @@ files. Add meaningful action, cut, transition, mistake, and note markers.
 After stopping, preserve the returned take ID and pending-finalization state.
 The replay normally finalizes only after the Minecraft connection closes.
 
-When the workflow reaches a user-controlled disconnect boundary, explain what
-must happen and wait. After reconnection or finalization, use `replay_list` and
-`replay_get` to identify the finalized replay before editing.
+When the take is accepted and disconnecting the current world is intended, use
+the finalization job returned by `recording_stop` with
+`recording_finalize_and_open`. Follow that job through `disconnecting`,
+`finalizing`, and `opening`; do not treat the replay as available until the job
+completes. If automated finalization is unavailable or fails recoverably, keep
+the job/take link and fall back to the explicit user-controlled disconnect.
 
 ## Edit, preview, and render
 
@@ -57,13 +60,16 @@ must happen and wait. After reconnection or finalization, use `replay_list` and
 2. Inspect `replay_timeline_get`, then apply small coherent batches with the
    exact base revision. On a revision conflict, re-read and reconcile rather
    than overwriting.
-3. Use `replay_observe` for interactive camera checks and `replay_preview` for
-   sampled frames, a contact sheet, or a low-resolution video. Inspect image
-   evidence and the completed preview job before approving a final render.
-4. Run `render_validate`, resolve its errors, then start `render_start` or
-   `render_still`. Follow progress with `job_get`. A returned job ID means
-   started, not rendered.
-5. Read completed artifacts through their `replay-mcp://artifact/...`
+3. Treat preview ranges as authored output time, not raw replay time. Use
+   `replay_preview` contact sheets or `draft_360p` frame/video ranges to revise
+   an edit without a full-quality render.
+4. Run `replay_validate_range` for each final shot plate. Resolve unloaded
+   chunks and camera-collision errors; review proximity and occlusion warnings.
+   Pass its completed job ID to the final-quality `render_start` call.
+5. Follow render progress with `job_get`. A returned job ID means started, not
+   rendered. Long bridge jobs keep the lease active, but human override or an
+   actual lease loss is still terminal for further mutations.
+6. Read completed artifacts through their `replay-mcp://artifact/...`
    resources and verify that expected duration/framing/output details match
    the project intent.
 
@@ -77,6 +83,10 @@ must happen and wait. After reconnection or finalization, use `replay_list` and
   from `recording_status`/`replay_list`; do not fabricate a replay ID.
 - On capability or policy denial, offer a workflow that stays within reported
   capabilities. Never claim unsupported editorial tracks are native.
+- For the optimized editor workflow, retain the editable `.mcpr`, render only
+  validated story-beat shot plates, and use SynthCut as the sole final timeline
+  for transitions, titles, grading, audio, and master export. Do not build a
+  second polished native master unless the user explicitly requests one.
 
 Always call `control_release` in the final cleanup path, including after an
 error. If release cannot be confirmed because the bridge disconnected, state

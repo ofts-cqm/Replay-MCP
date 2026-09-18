@@ -201,7 +201,7 @@ Rules:
 
 ## 4. Public MCP tool surface
 
-**Implementation status:** All 36 public tools below are registered by the
+**Implementation status:** All 38 public tools below are registered by the
 TypeScript sidecar with Zod inputs, typed error results, structured content,
 tool annotations, instance selection, lease enforcement, artifact conversion,
 persistent jobs, and project composition. The full surface passes the
@@ -481,9 +481,15 @@ returns a stable take ID and the intended replay artifact ID.
 
 #### `recording_stop`
 
-Stops and finalizes the active recording. It waits only for a bounded handoff;
-long finalization becomes a job. The result must distinguish a finalized replay
-from a recoverable temporary recording.
+Stops the logical take with a split marker and returns a pending-finalization
+job. It does not claim to stop Replay Mod's connection-scoped recorder.
+
+#### `recording_finalize_and_open`
+
+Consumes the pending-finalization job, intentionally disconnects the current
+world, waits for a stable `.mcpr`, registers the immutable source, and opens a
+working copy. Its persistent phases are `disconnecting`, `finalizing`,
+`opening`, and a terminal state. Timeouts retain recoverable take/path data.
 
 #### `recording_add_marker`
 
@@ -587,7 +593,16 @@ keyframe data.
 
 Previews a shot or timeline range and produces either a low-resolution video,
 a contact sheet, or sampled frames. It is an asynchronous job for non-trivial
-ranges. Previewing is the visual verification step before an expensive render.
+ranges. Preview ranges are authored output time and may also be expressed as
+start/end frames with an explicit frame rate. Contact sheets label both output
+time and mapped replay time; `draft_360p` is the fast review preset.
+
+#### `replay_validate_range`
+
+Evaluates a bounded authored-output range with settled seeks and verified
+frames. It waits for nearby chunks and reports blocking camera-in-solid or
+unready-chunk errors plus subject-distance and line-of-sight warnings. A
+successful validation job is required for final-quality shot-plate renders.
 
 ### 4.7 Rendering
 
@@ -614,6 +629,11 @@ named preset or explicit supported overrides and always returns a job ID.
 
 Completed jobs register rendered clips and technical metadata as artifacts.
 Cancellation and progress use the generic job tools.
+
+`start_us`/`end_us` crop the authored output timeline through a read-only
+timeline view, preserving Replay Mod interpolation and its render pre-roll.
+Preview aliases remain backward compatible, while final-quality renders carry
+the successful range-validation job ID.
 
 #### `render_still`
 
@@ -828,6 +848,9 @@ Lease behavior:
   director lease;
 - a bounded action in progress keeps its lease alive until it finishes or hits
   its deadline;
+- a sidecar-owned preview, finalization, or render job keeps heartbeats active
+  until the persistent job reaches a terminal state; the job itself remains
+  safe if a human override revokes subsequent control;
 - loss of heartbeat, process exit, explicit release, idle expiry, emergency
   stop, or human revocation cancels input and invalidates the lease;
 - the MCP API cannot force-acquire or revoke another owner; and
@@ -1200,12 +1223,16 @@ The sidecar resolves Minecraft game directories in this order:
 
 1. repeatable `--game-dir` command-line values;
 2. an explicit environment variable intended for development;
-3. the sidecar config beneath its supplied data directory; and
-4. conservative conventional launcher paths, reported as guesses rather than
+3. repository-local `.replay-mcp.json`;
+4. a prepared `<workspace>/run` directory;
+5. the sidecar config beneath its supplied data directory; and
+6. conservative conventional launcher paths, reported as guesses rather than
    silently trusted.
 
-Custom launcher locations need a one-time `replay-mcp-server configure
---game-dir <path>` operation. When `--data-dir` is omitted, the sidecar uses
+Custom launcher locations can use a repository-local config or a one-time
+`replay-mcp-server configure --game-dir <path>` operation. Repository and
+persisted directory files are hot-reloaded by the discovery loop. When
+`--data-dir` is omitted, the sidecar uses
 the operating system's persistent per-user data directory. This avoids making
 plugin startup depend on host-specific variable expansion while keeping state
 outside the versioned plugin installation. Bridge
@@ -1419,32 +1446,31 @@ The plugin and npm package are separate distribution products:
 Implemented verification:
 
 - TypeScript strict typecheck passes against Node 20+ and MCP server/client v2;
-- 13 Vitest tests pass across shared schemas, configuration precedence,
+- 16 Vitest tests pass across shared schemas, workspace/hot-reload discovery,
+  job-aware lease heartbeats, configuration precedence,
   authenticated WebSocket behavior, competing leases, timeouts, artifact
   confinement/checksums, project revisions/handoffs, plugin equivalence, and
   the full in-process MCP/fake-bridge workflow. This includes launching the
-  bundled server through the exact plugin stdio definition, listing all 36
+  bundled server through the exact plugin stdio definition, listing all 38
   tools, and calling offline `system_status`;
-- 15 JUnit tests pass, including the Java half of the shared valid/invalid
-  bridge-fixture contract;
+- 17 JUnit tests pass, including the Java half of the shared valid/invalid
+  bridge-fixture contract plus output-time range mapping and queued capture;
 - production TypeScript build and deterministic plugin bundle succeed;
 - the compatibility plugin and workflow skill pass their validators;
 - `npm pack --dry-run` contains only the declared package files; and
 - the repo-local `replay-mcp-local` marketplace installs and enables
-  `replay-director` version `0.1.0+codex.20260918160619`; an MCP client starts
-  the installed cache copy over stdio, lists all 36 tools, and receives its
+  `replay-director` version `0.1.0+codex.20260918205052`; an MCP client starts
+  the installed cache copy over stdio, lists all 38 tools, and receives its
   offline status successfully.
 
-Not yet validated:
+The 2026-09-18 baseline E2E validated the original live workflow. The new
+optimization paths are not yet live-validated, specifically:
 
-- a real graphical Minecraft client and framebuffer observation;
-- live human override and lease-expiry behavior against the Fabric mod;
-- Replay Mod connection teardown/finalization and reopening the produced
-  `.mcpr`;
-- real Replay Mod preview/still/video output with FFmpeg; and
-- visual inspection of the final media and exported handoff.
+- queued framebuffer capture under sustained live load;
+- automated finalization-and-open against a real connection teardown;
+- output-time range previews/renders and settled-seek safety results; and
+- the target repeat-run wall time of 30 minutes or less.
 
-Those live checks require an available prepared client/world and user
-participation at connection/disconnection boundaries. Their absence does not
-invalidate the automated fake-bridge suite, but it prevents claiming complete
-workflow validation.
+Those checks are intentionally deferred to the next broader feature-complete
+E2E. Their absence does not invalidate the automated suites, but the time goal
+must not be claimed as achieved until that run reports phase timings.

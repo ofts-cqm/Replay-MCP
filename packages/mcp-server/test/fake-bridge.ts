@@ -85,17 +85,23 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
         case "recording.marker": success({ success: true }); break;
         case "recording.stop":
           recording = false; success({ logical_recording: false, status: "pending_finalization", recoverable: true, take_id: "take-1" });
+          break;
+        case "recording.finalize_and_open": {
+          const jobId = crypto.randomUUID();
+          success({ job_id: jobId, status: "running", phase: "finalizing", take_id: "take-1" });
           setTimeout(() => {
-            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "recording.changed", params: { status: "finalized", recoverable: true, take_id: "take-1", artifact: artifact(replayPath, replay, "application/x-minecraft-replay") } }));
+            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "recording.finalization", params: { job_id: jobId, status: "completed", phase: "completed", progress: 1, take_id: "take-1", artifact: artifact(replayPath, replay, "application/x-minecraft-replay"), replay: { source: replayPath, working_copy: "working.mcpr", source_immutable: true } } }));
           }, 25);
           break;
+        }
         case "replay.list": success([{ name: "take.mcpr", path: "take.mcpr", size: 100 }]); break;
         case "replay.metadata": success({ path: params.path, duration_us: 5_000_000, minecraft_version: "26.2" }); break;
         case "replay.open": success({ source: params.path, working_copy: "working.mcpr", source_immutable: true }); break;
         case "replay.close": success({ success: true }); break;
         case "replay.save": success({ success: true, path: "take-edit-1.mcpr" }); break;
         case "replay.playback": success({ success: true, time_us: params.time_us ?? 0, speed: params.speed ?? 0 }); break;
-        case "timeline.get": success({ revision, tracks: { replay_time: [], camera_position: [] }, native_tracks: ["replay_time", "camera_position"], sidecar_tracks: ["shots", "excluded_ranges", "fov", "look_at"] }); break;
+        case "replay.preview_sample": success({ ...artifact(pngPath, png, "image/png"), view: "clean", output_time_us: params.output_time_us, replay_time_us: Number(params.output_time_us) + 1_000_000, validation: { valid: true, chunks_ready: true, camera_inside_block: false, warnings: [], errors: [] } }); break;
+        case "timeline.get": success({ revision, tracks: { replay_time: [{ time_us: 0, replay_time_us: 1_000_000 }, { time_us: 5_000_000, replay_time_us: 6_000_000 }], camera_position: [{ time_us: 0 }, { time_us: 5_000_000 }] }, native_tracks: ["replay_time", "camera_position"], sidecar_tracks: ["shots", "excluded_ranges", "fov", "look_at"] }); break;
         case "timeline.apply": revision = String(Number(revision) + 1); success({ revision, tracks: {}, warnings: [], undo_token: crypto.randomUUID() }); break;
         case "render.presets": success([{ id: "preview_720p", width: 1280, height: 720, fps: 30 }]); break;
         case "render.preflight": success({ valid: true, errors: [], warnings: [], estimated_frames: 30 }); break;

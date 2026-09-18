@@ -10,20 +10,28 @@ export interface DiscoveryResult {
 }
 
 export class DiscoveryManager {
-  readonly gameDirs: string[];
+  readonly #baseGameDirs: string[];
+  readonly #configFiles: string[];
+  readonly gameDirSources: Record<string, string>;
   readonly guessedGameDirs: string[];
   readonly clients = new Map<string, BridgeClient>();
+  readonly diagnostics: Record<string, string> = {};
   readonly #audit: AuditLog;
   readonly #intervalMs: number;
   #timer?: NodeJS.Timeout;
   #running = false;
 
-  constructor(gameDirs: string[], guessedGameDirs: string[], intervalMs: number, audit: AuditLog) {
-    this.gameDirs = gameDirs.map((item) => resolve(item));
+  constructor(gameDirs: string[], guessedGameDirs: string[], intervalMs: number, audit: AuditLog,
+              options: { configFiles?: string[]; gameDirSources?: Record<string, string> } = {}) {
+    this.#baseGameDirs = gameDirs.map((item) => resolve(item));
+    this.#configFiles = options.configFiles ?? [];
+    this.gameDirSources = { ...(options.gameDirSources ?? {}) };
     this.guessedGameDirs = guessedGameDirs.map((item) => resolve(item));
     this.#intervalMs = intervalMs;
     this.#audit = audit;
   }
+
+  get gameDirs(): string[] { return [...new Set([...this.#baseGameDirs, ...Object.keys(this.gameDirSources)])]; }
 
   async start(): Promise<void> {
     await this.discoverOnce();
@@ -35,9 +43,17 @@ export class DiscoveryManager {
     if (this.#running) return;
     this.#running = true;
     try {
+      await this.#reloadConfiguredDirs();
       const seen = new Set<string>();
       for (const gameDir of this.gameDirs) {
-        for (const descriptor of await scanDescriptors(gameDir)) {
+        let descriptors: InstanceDescriptor[];
+        try { descriptors = await scanDescriptors(gameDir); }
+        catch (error) {
+          this.diagnostics[gameDir] = `scan_failed: ${error instanceof Error ? error.message : String(error)}`;
+          continue;
+        }
+        this.diagnostics[gameDir] = descriptors.length ? `${descriptors.length} valid descriptor(s)` : "no valid live descriptor found";
+        for (const descriptor of descriptors) {
           seen.add(descriptor.instanceId);
           if (this.clients.get(descriptor.instanceId)?.connected) continue;
           try {
@@ -49,8 +65,10 @@ export class DiscoveryManager {
               if (this.clients.get(descriptor.instanceId) === client) this.clients.delete(descriptor.instanceId);
             });
             this.clients.set(descriptor.instanceId, client);
+            this.diagnostics[gameDir] = `connected to ${descriptor.instanceId}`;
             await this.#audit.append("bridge.connected", { instance_id: descriptor.instanceId, process_id: descriptor.processId });
           } catch (error) {
+            this.diagnostics[gameDir] = `descriptor rejected: ${error instanceof Error ? error.message : String(error)}`;
             await this.#audit.append("bridge.discovery_failed", {
               instance_id: descriptor.instanceId,
               message: error instanceof Error ? error.message : String(error),
@@ -83,6 +101,20 @@ export class DiscoveryManager {
     if (this.#timer) clearInterval(this.#timer);
     await Promise.allSettled([...this.clients.values()].map(async (client) => await client.close()));
     this.clients.clear();
+  }
+
+  async #reloadConfiguredDirs(): Promise<void> {
+    for (const configPath of this.#configFiles) {
+      try {
+        const parsed = JSON.parse(await readFile(configPath, "utf8")) as { game_dirs?: unknown; game_dir?: unknown };
+        const parent = resolve(configPath, "..");
+        const values = [parsed.game_dir, ...(Array.isArray(parsed.game_dirs) ? parsed.game_dirs : [])];
+        for (const value of values) if (typeof value === "string" && value.length) {
+          const gameDir = resolve(parent, value);
+          this.gameDirSources[gameDir] = configPath.endsWith(".replay-mcp.json") ? "repository_config_hot_reload" : "persisted_config_hot_reload";
+        }
+      } catch { /* Missing or partially-written configuration is retried on the next discovery pass. */ }
+    }
   }
 }
 

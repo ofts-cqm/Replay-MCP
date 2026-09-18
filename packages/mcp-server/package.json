@@ -25,6 +25,8 @@
     "bundle:plugin": "node scripts/bundle-plugin.mjs",
     "smoke:plugin": "node scripts/smoke-plugin.mjs",
     "test": "vitest run",
+    "test:unit": "vitest run test/config.test.ts test/contract.test.ts test/artifacts-projects.test.ts",
+    "test:integration": "vitest run test/bridge.test.ts test/workflow.test.ts test/lease-jobs.test.ts test/packaging.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

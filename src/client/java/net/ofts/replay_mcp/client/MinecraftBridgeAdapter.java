@@ -11,7 +11,8 @@ import com.replaymod.replaystudio.replay.ReplayFile;
 import com.replaymod.replaystudio.replay.ReplayMetaData;
 import com.replaymod.simplepathing.ReplayModSimplePathing;
 import com.replaymod.simplepathing.SPTimeline;
-import com.replaymod.simplepathing.InterpolatorType;
+import com.replaymod.pathing.properties.SpectatorProperty;
+import com.replaymod.pathing.properties.TimestampProperty;
 import com.replaymod.render.RenderSettings;
 import com.replaymod.render.ReplayModRender;
 import com.replaymod.render.rendering.VideoRenderer;
@@ -23,6 +24,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.client.gui.components.AbstractButton;
@@ -39,6 +42,7 @@ import net.ofts.replay_mcp.mixin.client.ScreenInvoker;
 import net.ofts.replay_mcp.mixin.client.ChatComponentAccessor;
 import net.ofts.replay_mcp.protocol.BridgeError;
 import net.ofts.replay_mcp.protocol.BridgeException;
+import net.ofts.replay_mcp.timeline.TimelineRangeView;
 
 import java.util.Set;
 import java.nio.file.Files;
@@ -50,6 +54,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private final Minecraft minecraft = Minecraft.getInstance();
@@ -66,6 +72,10 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private Path pendingRecordingPath;
     private long pendingRecordingSize = -1;
     private int pendingRecordingStableTicks;
+    private volatile String activeFinalizationJob;
+    private volatile long activeFinalizationDeadlineNanos;
+    private final AtomicBoolean finalizationMonitorStarted = new AtomicBoolean();
+    private final AtomicLong captureSequence = new AtomicLong();
     private ReplayFile openReplay;
     private Path replaySource;
     private Path replayWorkingCopy;
@@ -91,7 +101,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             result.addProperty("minecraft_version", minecraft.getLaunchedVersion());
             result.addProperty("replay_mod_version", ReplayMod.instance == null ? "unavailable" : ReplayMod.instance.getVersion());
             result.addProperty("connected", minecraft.level != null);
-            result.addProperty("runtime_mode", replayHandler() != null ? "replay_loaded" : minecraft.level != null ? "live_idle" : "game_offline");
+            result.addProperty("runtime_mode", activeRenderer != null ? "rendering" : replayHandler() != null ? "replay_loaded" : logicalRecording ? "live_recording" : minecraft.level != null ? "live_idle" : "game_offline");
             result.addProperty("replay_ready", replayHandler() != null && replayHandler().getCameraEntity() != null);
             result.addProperty("bridge_enabled", config.bridgeEnabled);
             JsonObject leasePolicy = new JsonObject();
@@ -178,6 +188,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             case "recording.status" -> recordingStatus();
             case "recording.start" -> recordingStart(params);
             case "recording.stop" -> recordingStop();
+            case "recording.finalize_and_open" -> recordingFinalizeAndOpen(params);
             case "recording.marker" -> marker(params);
             case "replay.list" -> replayList();
             case "replay.metadata" -> replayMetadata(params);
@@ -185,6 +196,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             case "replay.close" -> replayClose();
             case "replay.save" -> replaySave(params);
             case "replay.playback" -> playback(params);
+            case "replay.preview_sample" -> previewSample(params);
             case "render.start" -> renderStart(params);
             case "render.cancel" -> renderCancel(params);
             case "render.still" -> renderStill(params);
@@ -303,10 +315,11 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                 JsonObject result = artifacts.describe(output, "image/png", captured.getWidth(), captured.getHeight(), true);
                 JsonObject synchronizedSnapshot = snapshot();
                 result.addProperty("view", view); result.add("annotations", annotations);
+                result.addProperty("capture_sequence", captureSequence.incrementAndGet());
                 result.addProperty("capture_tick", synchronizedSnapshot.get("tick").getAsLong());
                 result.add("snapshot", synchronizedSnapshot); return result;
             }
-        } catch (TimeoutException e) { throw new BridgeException(BridgeError.TIMEOUT, "frame capture timed out"); }
+        } catch (TimeoutException e) { image.cancel(false); throw new BridgeException(BridgeError.TIMEOUT, "frame capture timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new BridgeException(BridgeError.CANCELLED, "frame capture interrupted"); }
         catch (java.util.concurrent.ExecutionException | IOException e) { throw new BridgeException(BridgeError.INTERNAL_ERROR, "frame capture failed"); }
     }
@@ -319,16 +332,17 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         JsonArray frames = new JsonArray(); int dropped = 0;
         for (int index = 0; index < count; index++) {
             cancellation.throwIfCancelled();
+            CompletableFuture<com.mojang.blaze3d.platform.NativeImage> future = null;
             try {
-                var future = FrameCaptureCoordinator.request(!view.equals("player"));
+                future = FrameCaptureCoordinator.request(!view.equals("player"));
                 try (var captured = future.get(2, TimeUnit.SECONDS)) {
                     JsonArray annotations = view.equals("annotated") ? annotationBounds(captured.getWidth(), captured.getHeight()) : new JsonArray();
                     if (view.equals("annotated")) drawAnnotations(captured, annotations);
                     Path output = artifacts.allocate("observations/bursts/" + UUID.randomUUID() + "-" + index + ".png"); Path temporary = output.resolveSibling(output.getFileName() + ".tmp");
                     captured.writeToFile(temporary); moveAtomic(temporary, output); JsonObject frame = artifacts.describe(output, "image/png", captured.getWidth(), captured.getHeight(), true);
-                    frame.addProperty("timestamp_us", System.currentTimeMillis() * 1_000L); frame.add("annotations", annotations); frames.add(frame);
+                    frame.addProperty("timestamp_us", System.currentTimeMillis() * 1_000L); frame.addProperty("capture_sequence", captureSequence.incrementAndGet()); frame.add("annotations", annotations); frames.add(frame);
                 }
-            } catch (TimeoutException e) { dropped++; }
+            } catch (TimeoutException e) { if (future != null) future.cancel(false); dropped++; }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new BridgeException(BridgeError.CANCELLED, "motion burst interrupted"); }
             catch (java.util.concurrent.ExecutionException | IOException | IllegalStateException e) { dropped++; }
         }
@@ -645,6 +659,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private void tickRecordingFinalization() {
+        if (activeFinalizationJob != null) return;
         Path pending = pendingRecordingPath;
         if (pending == null || recordingListener() != null || !Files.isRegularFile(pending)) return;
         try {
@@ -660,6 +675,57 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             if (pendingTakeId != null) event.addProperty("take_id", pendingTakeId);
             events.publish("recording.changed", event); pendingRecordingPath = null; pendingTakeId = null;
         }
+    }
+
+    private synchronized JsonObject recordingFinalizeAndOpen(JsonObject params) {
+        if (logicalRecording) throw new BridgeException(BridgeError.CONFLICT, "stop the logical take before finalizing it");
+        if (pendingRecordingPath == null) throw new BridgeException(BridgeError.CONFLICT, "no recording is pending finalization");
+        if (activeFinalizationJob != null) throw new BridgeException(BridgeError.CONFLICT, "recording finalization is already active");
+        String jobId = UUID.randomUUID().toString(); activeFinalizationJob = jobId;
+        long timeoutMs = params.has("timeout_ms") ? params.get("timeout_ms").getAsLong() : 120_000L;
+        activeFinalizationDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(5_000, Math.min(300_000, timeoutMs)));
+        pendingRecordingSize = -1; pendingRecordingStableTicks = 0;
+        publishFinalization(jobId, "disconnecting", 0.05, null);
+        onClient(() -> { minecraft.disconnectWithSavingScreen(); return null; });
+        publishFinalization(jobId, "finalizing", 0.15, null);
+        if (finalizationMonitorStarted.compareAndSet(false, true)) {
+            renderMonitor.scheduleAtFixedRate(this::monitorFinalization, 100, 100, TimeUnit.MILLISECONDS);
+        }
+        JsonObject result = new JsonObject(); result.addProperty("job_id", jobId); result.addProperty("status", "running");
+        result.addProperty("phase", "finalizing"); result.addProperty("take_id", pendingTakeId); return result;
+    }
+
+    private void monitorFinalization() {
+        String jobId = activeFinalizationJob; Path pending = pendingRecordingPath;
+        if (jobId == null || pending == null) return;
+        if (System.nanoTime() >= activeFinalizationDeadlineNanos) {
+            JsonObject failure = new JsonObject(); failure.addProperty("recoverable", true); failure.addProperty("path", pending.toString());
+            publishFinalization(jobId, "failed", 0.15, failure); activeFinalizationJob = null; return;
+        }
+        if (recordingListener() != null || !Files.isRegularFile(pending)) return;
+        try {
+            long size = Files.size(pending);
+            if (size != pendingRecordingSize) { pendingRecordingSize = size; pendingRecordingStableTicks = 0; return; }
+            if (++pendingRecordingStableTicks < 10) return;
+            publishFinalization(jobId, "opening", 0.8, null);
+            JsonObject openParams = new JsonObject(); openParams.addProperty("path", pending.toString());
+            JsonObject opened = replayOpen(openParams);
+            JsonObject completed = new JsonObject(); completed.addProperty("take_id", pendingTakeId);
+            completed.add("artifact", describeFile(pending, "application/x-minecraft-replay", 0, 0, true));
+            completed.add("replay", opened); publishFinalization(jobId, "completed", 1, completed);
+            pendingRecordingPath = null; pendingTakeId = null; pendingRecordingSize = -1; pendingRecordingStableTicks = 0; activeFinalizationJob = null;
+        } catch (Throwable failure) {
+            JsonObject detail = new JsonObject(); detail.addProperty("recoverable", true); detail.addProperty("path", pending.toString());
+            detail.addProperty("error", failure instanceof BridgeException ? failure.getMessage() : "recording finalization failed");
+            publishFinalization(jobId, "failed", 0.8, detail); activeFinalizationJob = null;
+        }
+    }
+
+    private void publishFinalization(String jobId, String phase, double progress, JsonObject detail) {
+        JsonObject event = detail == null ? new JsonObject() : detail.deepCopy();
+        event.addProperty("job_id", jobId); event.addProperty("phase", phase); event.addProperty("progress", progress);
+        event.addProperty("status", phase.equals("completed") ? "completed" : phase.equals("failed") ? "failed" : "running");
+        events.publish("recording.finalization", event);
     }
 
     private JsonObject marker(JsonObject params) {
@@ -752,6 +818,86 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         });
     }
 
+    private JsonObject previewSample(JsonObject params) {
+        if (!params.has("output_time_us")) throw new BridgeException(BridgeError.INVALID_REQUEST, "output_time_us is required");
+        long outputUs = params.get("output_time_us").getAsLong();
+        if (outputUs < 0) throw new BridgeException(BridgeError.INVALID_REQUEST, "output_time_us must be non-negative");
+        long outputMs = outputUs / 1_000L;
+        int radius = params.has("chunk_radius") ? params.get("chunk_radius").getAsInt() : 1;
+        long waitMs = params.has("chunk_timeout_ms") ? params.get("chunk_timeout_ms").getAsLong() : 5_000L;
+        if (radius < 0 || radius > 4 || waitMs < 0 || waitMs > 30_000) throw new BridgeException(BridgeError.INVALID_REQUEST, "invalid chunk readiness bounds");
+
+        JsonObject mapped = onClient(() -> {
+            var handler = replayHandler();
+            SPTimeline timeline = ReplayModSimplePathing.instance == null ? null : ReplayModSimplePathing.instance.getCurrentTimeline();
+            if (handler == null || timeline == null) throw new BridgeException(BridgeError.INVALID_MODE, "an editable replay timeline is required");
+            timeline.getTimeline().getPaths().forEach(com.replaymod.replaystudio.pathing.path.Path::updateAll);
+            int replayMs = timeline.getTimePath().getValue(TimestampProperty.PROPERTY, outputMs)
+                    .orElseThrow(() -> new BridgeException(BridgeError.INVALID_REQUEST, "output time is outside the authored replay-time path"));
+            var sender = handler.getReplaySender();
+            sender.setSyncModeAndWait();
+            sender.jumpToTime(Math.max(0, replayMs - 1_000));
+            sender.sendPacketsTill(replayMs);
+            timeline.getTimeline().applyToGame(outputMs, handler);
+            timeline.getTimeline().applyToGame(outputMs, handler);
+            JsonObject result = new JsonObject(); result.addProperty("output_time_us", outputMs * 1_000L);
+            result.addProperty("replay_time_us", replayMs * 1_000L); return result;
+        });
+
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs);
+        boolean chunksReady;
+        do {
+            chunksReady = onClient(() -> chunksReady(radius));
+            if (chunksReady || System.nanoTime() >= deadline) break;
+            try { Thread.sleep(25); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new BridgeException(BridgeError.CANCELLED, "preview sample interrupted"); }
+        } while (true);
+
+        JsonObject frame = captureFrame(params);
+        boolean readyForValidation = chunksReady;
+        JsonObject validation = onClient(() -> cameraSafety(params, outputMs, readyForValidation));
+        frame.add("validation", validation);
+        frame.addProperty("output_time_us", mapped.get("output_time_us").getAsLong());
+        frame.addProperty("replay_time_us", mapped.get("replay_time_us").getAsLong());
+        return frame;
+    }
+
+    private boolean chunksReady(int radius) {
+        var handler = replayHandler();
+        var camera = handler == null ? null : handler.getCameraEntity();
+        if (camera == null || minecraft.level == null) return false;
+        BlockPos center = camera.blockPosition();
+        for (int x = -radius; x <= radius; x++) for (int z = -radius; z <= radius; z++) {
+            if (!minecraft.level.hasChunkAt(center.offset(x * 16, 0, z * 16))) return false;
+        }
+        return true;
+    }
+
+    private JsonObject cameraSafety(JsonObject params, long outputMs, boolean chunksReady) {
+        JsonObject result = new JsonObject(); JsonArray warnings = new JsonArray(); JsonArray errors = new JsonArray();
+        result.addProperty("chunks_ready", chunksReady);
+        if (!chunksReady) errors.add("chunks_not_ready");
+        var handler = replayHandler(); var camera = handler == null ? null : handler.getCameraEntity();
+        if (camera == null || minecraft.level == null) {
+            errors.add("camera_unavailable"); result.add("warnings", warnings); result.add("errors", errors); result.addProperty("valid", false); return result;
+        }
+        boolean inside = camera.isInWall(); result.addProperty("camera_inside_block", inside);
+        if (inside) errors.add("camera_inside_block");
+        Integer subjectId = params.has("subject_entity_id") ? params.get("subject_entity_id").getAsInt() : null;
+        SPTimeline timeline = ReplayModSimplePathing.instance == null ? null : ReplayModSimplePathing.instance.getCurrentTimeline();
+        if (subjectId == null && timeline != null) subjectId = timeline.getPositionPath().getValue(SpectatorProperty.PROPERTY, outputMs).orElse(null);
+        Entity subject = subjectId == null ? null : minecraft.level.getEntity(subjectId);
+        if (subject != null && subject != camera) {
+            Vec3 from = camera.getEyePosition(), to = subject.getEyePosition(); double distance = from.distanceTo(to);
+            result.addProperty("subject_entity_id", subject.getId()); result.addProperty("subject_distance", distance);
+            if (distance < 1.5) warnings.add("subject_too_close");
+            HitResult hit = minecraft.level.clip(new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, camera));
+            boolean visible = hit.getType() == HitResult.Type.MISS || hit.getLocation().distanceToSqr(from) + 0.01 >= from.distanceToSqr(to);
+            result.addProperty("subject_visible", visible); if (!visible) warnings.add("subject_occluded");
+        }
+        result.add("warnings", warnings); result.add("errors", errors); result.addProperty("valid", errors.isEmpty()); return result;
+    }
+
     private static double playbackSpeed(double speed) {
         if (!Double.isFinite(speed) || speed < 0 || speed > 64) throw new BridgeException(BridgeError.INVALID_REQUEST, "playback speed must be between 0 and 64");
         return speed;
@@ -767,13 +913,19 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         boolean sequence = params.has("preset") && params.get("preset").getAsString().equals("transparent_png");
         Path partial = partialOutput(output, sequence);
         RenderSettings settings = renderSettings(params, partial);
+        long fullDurationMs = timelineOutputDuration(timeline);
+        long startMs = params.has("start_us") ? params.get("start_us").getAsLong() / 1_000L : 0L;
+        long endMs = params.has("end_us") ? params.get("end_us").getAsLong() / 1_000L : fullDurationMs;
+        if (startMs < 0 || endMs <= startMs || endMs > fullDurationMs) throw new BridgeException(BridgeError.INVALID_REQUEST, "render range is outside the authored output timeline");
+        var renderTimeline = startMs == 0 && endMs == fullDurationMs
+                ? timeline.getTimeline() : new TimelineRangeView(timeline.getTimeline(), startMs, endMs);
         int restoreWidth = minecraft.getWindow().getWidth(), restoreHeight = minecraft.getWindow().getHeight();
         String jobId = UUID.randomUUID().toString(); activeRenderJob = jobId; activeRenderOutput = output; activeRenderPartial = partial; activeRenderCancelled = false;
         ReplayMod.instance.runLaterWithoutLock(() -> {
             MCVer.resizeMainWindow(minecraft, settings.getVideoWidth(), settings.getVideoHeight());
             ReplayMod.instance.runLaterWithoutLock(() -> {
             try {
-                VideoRenderer renderer = new VideoRenderer(settings, handler, timeline.getTimeline()); activeRenderer = renderer;
+                VideoRenderer renderer = new VideoRenderer(settings, handler, renderTimeline); activeRenderer = renderer;
                 if (activeRenderCancelled) renderer.cancel();
                 startProgress(renderer, jobId);
                 boolean completed = renderer.renderVideo();
@@ -795,7 +947,8 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             });
         });
         JsonObject result = new JsonObject(); result.addProperty("job_id", jobId); result.addProperty("status", "running");
-        result.addProperty("output", output.toString()); result.addProperty("partial_output", partial.toString()); return result;
+        result.addProperty("output", output.toString()); result.addProperty("partial_output", partial.toString());
+        result.addProperty("start_us", startMs * 1_000L); result.addProperty("end_us", endMs * 1_000L); return result;
     }
 
     private synchronized JsonObject renderStill(JsonObject params) {
@@ -805,7 +958,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         if (!params.has("time_us")) throw new BridgeException(BridgeError.INVALID_REQUEST, "time_us is required");
         long requestedUs = params.get("time_us").getAsLong();
         long actualUs = Math.floorDiv(requestedUs, 1_000L) * 1_000L;
-        if (requestedUs < 0 || actualUs / 1_000L > handler.getReplayDuration()) throw new BridgeException(BridgeError.INVALID_REQUEST, "still time is outside the replay");
+        if (requestedUs < 0) throw new BridgeException(BridgeError.INVALID_REQUEST, "still time must be non-negative");
         Path output = renderOutput(params.get("output").getAsString());
         if (Files.exists(output)) throw new BridgeException(BridgeError.CONFLICT, "still output already exists");
         Path frames = partialOutput(output, true);
@@ -819,21 +972,19 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         normalized.addProperty("name_tags", nameTags); normalized.addProperty("anti_aliasing", aa);
         RenderSettings settings = renderSettings(normalized, frames);
         int restoreWidth = minecraft.getWindow().getWidth(), restoreHeight = minecraft.getWindow().getHeight();
-        var camera = awaitReplayCamera(handler);
-        if (camera == null) throw new BridgeException(BridgeError.INVALID_MODE, "Replay Mod camera is unavailable");
-        SPTimeline oneFrame = new SPTimeline();
-        oneFrame.setDefaultInterpolatorType(InterpolatorType.LINEAR);
-        int replayMs = Math.toIntExact(actualUs / 1_000L);
-        for (long outputMs : new long[]{0L, 100L}) {
-            oneFrame.addTimeKeyframe(outputMs, replayMs + (outputMs == 0 ? 0 : 1));
-            oneFrame.addPositionKeyframe(outputMs, camera.getX(), camera.getY(), camera.getZ(), camera.getYRot(), camera.getXRot(), camera.roll, -1);
-        }
+        SPTimeline timeline = ReplayModSimplePathing.instance == null ? null : ReplayModSimplePathing.instance.getCurrentTimeline();
+        if (timeline == null) throw new BridgeException(BridgeError.INVALID_MODE, "an editable replay timeline is required");
+        long fullDurationMs = timelineOutputDuration(timeline);
+        long outputMs = actualUs / 1_000L;
+        if (outputMs >= fullDurationMs) throw new BridgeException(BridgeError.INVALID_REQUEST, "still time is outside the authored output timeline");
+        long endMs = Math.min(fullDurationMs, outputMs + 100L);
+        var oneFrame = new TimelineRangeView(timeline.getTimeline(), outputMs, endMs);
         String jobId = UUID.randomUUID().toString(); activeRenderJob = jobId; activeRenderOutput = output; activeRenderPartial = frames; activeRenderCancelled = false;
         ReplayMod.instance.runLaterWithoutLock(() -> {
             MCVer.resizeMainWindow(minecraft, settings.getVideoWidth(), settings.getVideoHeight());
             ReplayMod.instance.runLaterWithoutLock(() -> {
             try {
-                VideoRenderer renderer = new VideoRenderer(settings, handler, oneFrame.getTimeline()); activeRenderer = renderer;
+                VideoRenderer renderer = new VideoRenderer(settings, handler, oneFrame); activeRenderer = renderer;
                 if (activeRenderCancelled) renderer.cancel();
                 boolean completed = renderer.renderVideo();
                 boolean succeeded = completed && !renderer.hasFailed() && !activeRenderCancelled;
@@ -895,6 +1046,15 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         activeRenderer = null; activeRenderJob = null; activeRenderOutput = null; activeRenderPartial = null; activeRenderCancelled = false;
     }
 
+    private static long timelineOutputDuration(SPTimeline timeline) {
+        long duration = 0;
+        for (var path : timeline.getTimeline().getPaths()) if (path.isActive()) {
+            for (var keyframe : path.getKeyframes()) duration = Math.max(duration, keyframe.getTime());
+        }
+        if (duration <= 0) throw new BridgeException(BridgeError.INVALID_REQUEST, "timeline has no positive output duration");
+        return duration;
+    }
+
     private static Path partialOutput(Path output, boolean directory) {
         String name = output.getFileName().toString(); String suffix = "-" + UUID.randomUUID() + ".partial";
         if (!directory) {
@@ -936,10 +1096,12 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
 
     private static RenderSettings renderSettings(JsonObject p, Path output) {
         String preset = p.has("preset") ? p.get("preset").getAsString() : "high_quality";
-        int width = p.has("width") ? p.get("width").getAsInt() : preset.equals("preview") ? 1280 : 1920;
-        int height = p.has("height") ? p.get("height").getAsInt() : preset.equals("preview") ? 720 : 1080;
-        int fps = p.has("fps") ? p.get("fps").getAsInt() : preset.equals("preview") ? 30 : 60;
-        int bitrate = (p.has("bitrate_kbps") ? p.get("bitrate_kbps").getAsInt() : preset.equals("preview") ? 6_000 : 30_000) * 1024;
+        if (preset.equals("preview_720p")) preset = "preview";
+        boolean draft = preset.equals("draft_360p"), preview = preset.equals("preview");
+        int width = p.has("width") ? p.get("width").getAsInt() : draft ? 640 : preview ? 1280 : 1920;
+        int height = p.has("height") ? p.get("height").getAsInt() : draft ? 360 : preview ? 720 : 1080;
+        int fps = p.has("fps") ? p.get("fps").getAsInt() : preview || draft ? 30 : 60;
+        int bitrate = (p.has("bitrate_kbps") ? p.get("bitrate_kbps").getAsInt() : draft ? 2_000 : preview ? 6_000 : 30_000) * 1024;
         RenderSettings.EncodingPreset encoding = preset.equals("transparent_png") ? RenderSettings.EncodingPreset.PNG : RenderSettings.EncodingPreset.MP4_CUSTOM;
         RenderSettings.RenderMethod method = switch (p.has("method") ? p.get("method").getAsString() : "default") {
             case "stereoscopic" -> RenderSettings.RenderMethod.STEREOSCOPIC;

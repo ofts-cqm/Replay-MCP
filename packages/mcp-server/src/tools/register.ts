@@ -44,7 +44,9 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
       session_id: runtime.sessionId,
       audit_resource: `replay-mcp://audit/${runtime.sessionId}`,
       state: instances.length ? "online" : "offline",
-      searched_game_dirs: runtime.options.gameDirs,
+      searched_game_dirs: runtime.discovery.gameDirs,
+      game_dir_sources: runtime.discovery.gameDirSources,
+      discovery_diagnostics: runtime.discovery.diagnostics,
       guessed_game_dirs: runtime.options.guessedGameDirs,
       data_dir: runtime.options.dataDir,
       instances,
@@ -101,6 +103,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   }, safe(async ({ job_id }, signal) => {
     const job = runtime.jobs.get(job_id);
     if (!job) throw new SidecarError("job_not_found", `job ${job_id} was not found`);
+    if (!job.cancellable || !["queued", "running"].includes(job.status)) return ok(`Job is ${job.status}.`, { job });
     let updated: JobRecord;
     if (job.bridge_backed && job.instance_id && job.bridge_job_id) {
       const { result } = await runtime.mutate("render.cancel", { instance_id: job.instance_id, job_id: job.bridge_job_id }, signal);
@@ -218,7 +221,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     let job: JobRecord | undefined;
     if (data.status === "pending_finalization") {
       job = await runtime.jobs.create("analysis", {
-        status: "running", cancellable: false, bridge_backed: true,
+        cancellable: false,
         instance_id: client.descriptor.instanceId,
         ...(context.project_id ? { project_id: context.project_id } : {}),
         result: { purpose: "recording_finalization", ...context, take_id: data.take_id ?? context.take_id },
@@ -227,6 +230,22 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     return ok("Logical take stopped; Replay Mod file finalization remains connection-scoped.", {
       instance_id: client.descriptor.instanceId, result: data, ...(job ? { finalization_job: job } : {}),
     });
+  }));
+
+  server.registerTool("recording_finalize_and_open", {
+    title: "Finalize and open recording",
+    description: "Intentionally disconnect the current world, wait for the connection-scoped replay to finalize, and open an immutable working copy.",
+    inputSchema: z.object({ ...instance, request_id: requestId, finalization_job_id: z.uuid(), timeout_ms: z.number().int().min(5_000).max(300_000).default(120_000) }), annotations: MUTATE,
+  }, safe(async (args, signal) => {
+    const pending = runtime.jobs.get(args.finalization_job_id);
+    if (!pending || pending.kind !== "analysis" || pending.status !== "queued" || pending.result?.purpose !== "recording_finalization") {
+      throw new SidecarError("conflict", "finalization_job_id is not a pending recording finalization job");
+    }
+    const client = runtime.client(args.instance_id);
+    if (pending.instance_id !== client.descriptor.instanceId) throw new SidecarError("conflict", "finalization job belongs to another Minecraft instance");
+    const { result } = await runtime.mutate("recording.finalize_and_open", args, signal);
+    const updated = await runtime.jobs.registerBridgeJob(pending, client, objectResult(result));
+    return ok("Recording finalization and replay opening started; follow the job to a terminal state.", { job: updated });
   }));
 
   server.registerTool("recording_add_marker", {
@@ -292,25 +311,49 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     title: "Preview replay edit", description: "Create a persistent low-resolution video job or sampled-frame/contact-sheet job before final rendering.",
     inputSchema: z.object({
       ...instance, request_id: requestId, project_id: z.string().optional(), shot_id: z.string().optional(), start_us: z.number().int().nonnegative().optional(),
-      end_us: z.number().int().positive().optional(), output_mode: z.enum(["video", "contact_sheet", "frames"]).default("contact_sheet"),
+      end_us: z.number().int().positive().optional(), start_frame: z.number().int().nonnegative().optional(), end_frame: z.number().int().positive().optional(),
+      fps: z.number().positive().max(240).default(30), output_mode: z.enum(["video", "contact_sheet", "frames"]).default("contact_sheet"),
       frames: z.number().int().min(1).max(64).default(12), output: z.string().optional(), preset: z.string().optional(),
-    }).refine((value) => value.start_us === undefined || value.end_us === undefined || value.end_us > value.start_us, "end_us must be greater than start_us"), annotations: MUTATE,
+      width: z.number().int().min(16).max(7680).optional(), height: z.number().int().min(16).max(4320).optional(),
+    }).superRefine(validateTimeOrFrameRange), annotations: MUTATE,
   }, safe(async (args, signal) => {
+    const normalized = normalizeOutputRange(args);
     const client = runtime.client(args.instance_id);
     const job = await runtime.jobs.create("preview", { instance_id: client.descriptor.instanceId, ...(args.project_id ? { project_id: args.project_id } : {}) });
     if (args.output_mode === "video") {
-      const renderArgs = { ...args, preset: args.preset ?? "preview_720p", output: args.output ?? `preview-${job.id}.mp4` };
+      const renderArgs = { ...normalized, preset: args.preset ?? "draft_360p", output: args.output ?? `preview-${job.id}.mp4` };
       const { result } = await runtime.mutate("render.start", renderArgs, signal);
       const updated = await runtime.jobs.registerBridgeJob(job, client, objectResult(result));
       return ok("Low-resolution video preview started.", { job: updated });
     }
     await runtime.jobs.update(job.id, { status: "running" });
     const controller = runtime.jobs.createAbortController(job.id);
-    void runSampledPreview(runtime, client.descriptor.instanceId, job.id, args, controller.signal).catch(async (error) => {
+    void runSampledPreview(runtime, client.descriptor.instanceId, job.id, normalized, controller.signal, false).catch(async (error) => {
       if (runtime.jobs.get(job.id)?.status === "cancelled") return;
       await runtime.jobs.update(job.id, { status: "failed", failure: { code: errorCode(error), message: errorMessage(error) } });
     });
     return ok("Sampled preview started.", { job: runtime.jobs.get(job.id)! });
+  }));
+
+  server.registerTool("replay_validate_range", {
+    title: "Validate replay shot range",
+    description: "Evaluate the authored output timeline with settled seeks, chunk readiness, camera collision, subject distance, and line-of-sight checks.",
+    inputSchema: z.object({
+      ...instance, request_id: requestId, start_us: z.number().int().nonnegative().optional(), end_us: z.number().int().positive().optional(),
+      start_frame: z.number().int().nonnegative().optional(), end_frame: z.number().int().positive().optional(), fps: z.number().positive().max(240).default(30),
+      frames: z.number().int().min(2).max(64).default(8), subject_entity_id: z.number().int().optional(), chunk_radius: z.number().int().min(0).max(4).default(1),
+      chunk_timeout_ms: z.number().int().min(0).max(30_000).default(5_000),
+    }).superRefine(validateTimeOrFrameRange), annotations: MUTATE,
+  }, safe(async (args) => {
+    const normalized = normalizeOutputRange(args);
+    const client = runtime.client(args.instance_id);
+    const job = await runtime.jobs.create("analysis", { instance_id: client.descriptor.instanceId, result: { purpose: "replay_range_validation" } });
+    await runtime.jobs.update(job.id, { status: "running" });
+    const controller = runtime.jobs.createAbortController(job.id);
+    void runSampledPreview(runtime, client.descriptor.instanceId, job.id, normalized, controller.signal, true).catch(async (error) => {
+      if (runtime.jobs.get(job.id)?.status !== "cancelled") await runtime.jobs.update(job.id, { status: "failed", failure: { code: errorCode(error), message: errorMessage(error) } });
+    });
+    return ok("Replay range validation started.", { job: runtime.jobs.get(job.id)! });
   }));
 
   server.registerTool("render_presets", {
@@ -323,8 +366,11 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
 
   server.registerTool("render_start", {
     title: "Start render", description: "Start a persistent Replay Mod video render job for a shot, range, or project batch.",
-    inputSchema: z.object({ ...instance, request_id: requestId, project_id: z.string().optional(), shot_id: z.string().optional(), preset: z.string().optional(), output: z.string().min(1), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), fps: z.number().positive().optional(), start_us: z.number().int().nonnegative().optional(), end_us: z.number().int().positive().optional() }).catchall(z.unknown()), annotations: MUTATE,
-  }, safe(async (args, signal) => startRenderJob(runtime, "render", "render.start", args, signal)));
+    inputSchema: z.object({ ...instance, request_id: requestId, project_id: z.string().optional(), shot_id: z.string().optional(), preset: z.string().optional(), output: z.string().min(1), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), fps: z.number().positive().optional(), start_us: z.number().int().nonnegative().optional(), end_us: z.number().int().positive().optional(), validation_job_id: z.uuid().optional() }).catchall(z.unknown()), annotations: MUTATE,
+  }, safe(async (args, signal) => {
+    await requireRenderValidation(runtime, args);
+    return await startRenderJob(runtime, "render", "render.start", args, signal);
+  }));
 
   server.registerTool("render_still", {
     title: "Render high-quality still", description: "Start a persistent exact-time still render job for framing or final review.",
@@ -464,50 +510,62 @@ async function startRenderJob(runtime: ReplayMcpRuntime, kind: "render" | "still
   }
 }
 
-async function runSampledPreview(runtime: ReplayMcpRuntime, instanceId: string, jobId: string, args: Record<string, unknown>, signal: AbortSignal): Promise<void> {
+async function runSampledPreview(runtime: ReplayMcpRuntime, instanceId: string, jobId: string, args: Record<string, unknown>, signal: AbortSignal, validationOnly: boolean): Promise<void> {
   const client = runtime.client(instanceId);
   const frameCount = typeof args.frames === "number" ? args.frames : 12;
-  const startUs = typeof args.start_us === "number" ? args.start_us : undefined;
-  const endUs = typeof args.end_us === "number" ? args.end_us : undefined;
+  let startUs = typeof args.start_us === "number" ? args.start_us : undefined;
+  let endUs = typeof args.end_us === "number" ? args.end_us : undefined;
+  const timeline = objectResult(await client.call("timeline.get", {}));
+  const timelineRevision = typeof timeline.revision === "string" ? timeline.revision : "unknown";
+  if (startUs === undefined || endUs === undefined) {
+    startUs = 0; endUs = timelineDurationUs(timeline);
+    if (endUs <= 0) throw new SidecarError("invalid_request", "the authored timeline has no positive output duration");
+  }
   const artifacts: ArtifactRecord[] = [];
+  const samples: Record<string, unknown>[] = [];
+  const labels: string[] = [];
   const metadata = {
     ...(typeof args.project_id === "string" ? { project_id: args.project_id } : {}),
     ...(typeof args.shot_id === "string" ? { shot_id: args.shot_id } : {}),
     provenance: { tool: "replay_preview" },
   };
-  if (startUs !== undefined && endUs !== undefined) {
-    for (let index = 0; index < frameCount; index++) {
-      if (signal.aborted) throw new SidecarError("cancelled", "preview sampling was cancelled");
-      const fraction = frameCount === 1 ? 0 : index / (frameCount - 1);
-      const timeUs = Math.round(startUs + (endUs - startUs) * fraction);
-      await runtime.leases.mutate(client, "replay.playback", {
-        operation: "seek", time_us: timeUs,
-        request_id: `${String(args.request_id ?? jobId)}:seek:${index}`,
-      }, signal);
-      const frame = await client.call("observation.framebuffer", { view: "clean" }, { deadlineMs: 30_000, signal });
-      artifacts.push(...await runtime.registerArtifacts(frame, client, { ...metadata, provenance: { ...metadata.provenance, sample_time_us: timeUs } }));
-      await runtime.jobs.update(jobId, { progress: (index + 1) / frameCount });
-    }
-  } else {
-    const result = await runtime.leases.mutate(client, "observation.motion_burst", {
-      frames: frameCount, view: "clean", request_id: String(args.request_id ?? crypto.randomUUID()),
-    }, signal);
-    artifacts.push(...await runtime.registerArtifacts(result, client, metadata));
+  for (let index = 0; index < frameCount; index++) {
+    if (signal.aborted) throw new SidecarError("cancelled", "preview sampling was cancelled");
+    const fraction = frameCount === 1 ? 0 : index / (frameCount - 1);
+    const timeUs = Math.round(startUs + (endUs - startUs) * fraction);
+    const result = objectResult(await runtime.leases.mutate(client, "replay.preview_sample", {
+      output_time_us: timeUs, view: "clean", subject_entity_id: args.subject_entity_id,
+      chunk_radius: args.chunk_radius, chunk_timeout_ms: args.chunk_timeout_ms,
+      request_id: `${String(args.request_id ?? jobId)}:sample:${index}`,
+    }, signal));
+    const registered = await runtime.registerArtifacts(result, client, { ...metadata, provenance: { ...metadata.provenance, output_time_us: timeUs, replay_time_us: result.replay_time_us } });
+    artifacts.push(...registered);
+    const validation = isObject(result.validation) ? result.validation : {};
+    samples.push({ output_time_us: result.output_time_us ?? timeUs, replay_time_us: result.replay_time_us, validation });
+    labels.push(`${formatTime(Number(result.output_time_us ?? timeUs))} out / ${formatTime(Number(result.replay_time_us ?? 0))} replay`);
+    await runtime.jobs.update(jobId, { progress: (index + 1) / frameCount });
   }
   if (signal.aborted || runtime.jobs.get(jobId)?.status === "cancelled") return;
+  const errors = samples.flatMap((sample) => isObject(sample.validation) && Array.isArray(sample.validation.errors) ? sample.validation.errors : []);
+  const warnings = samples.flatMap((sample) => isObject(sample.validation) && Array.isArray(sample.validation.warnings) ? sample.validation.warnings : []);
   let output = artifacts;
-  if (args.output_mode === "contact_sheet" && artifacts.length) output = [await buildContactSheet(runtime, artifacts, `preview-${jobId}`)];
-  await runtime.jobs.update(jobId, { status: "completed", progress: 1, result_artifact_ids: output.map((item) => item.id), result: { sampled_frame_ids: artifacts.map((item) => item.id), output_mode: args.output_mode } });
+  if (!validationOnly && args.output_mode === "contact_sheet" && artifacts.length) output = [await buildContactSheet(runtime, artifacts, `preview-${jobId}`, labels)];
+  await runtime.jobs.update(jobId, {
+    status: "completed", progress: 1, result_artifact_ids: output.map((item) => item.id), warnings: [...new Set(warnings.map(String))],
+    result: { purpose: validationOnly ? "replay_range_validation" : "replay_preview", valid: errors.length === 0, errors, warnings, samples,
+      start_us: startUs, end_us: endUs, timeline_revision: timelineRevision, sampled_frame_ids: artifacts.map((item) => item.id), output_mode: validationOnly ? "validation" : args.output_mode },
+  });
 }
 
-async function buildContactSheet(runtime: ReplayMcpRuntime, frames: ArtifactRecord[], name: string): Promise<ArtifactRecord> {
+async function buildContactSheet(runtime: ReplayMcpRuntime, frames: ArtifactRecord[], name: string, labels: string[] = []): Promise<ArtifactRecord> {
   const columns = Math.min(4, frames.length);
   const rows = Math.ceil(frames.length / columns);
   const cellWidth = 320, cellHeight = 180;
   const images = await Promise.all(frames.map(async (frame, index) => {
     const data = (await readFile(frame.path)).toString("base64");
     const x = (index % columns) * cellWidth, y = Math.floor(index / columns) * cellHeight;
-    return `<image x="${x}" y="${y}" width="${cellWidth}" height="${cellHeight}" preserveAspectRatio="xMidYMid meet" href="data:${frame.mime_type};base64,${data}"/><text x="${x + 8}" y="${y + 18}" fill="white" stroke="black" paint-order="stroke">${index + 1}</text>`;
+    const label = escapeXml(labels[index] ?? String(index + 1));
+    return `<image x="${x}" y="${y}" width="${cellWidth}" height="${cellHeight}" preserveAspectRatio="xMidYMid meet" href="data:${frame.mime_type};base64,${data}"/><text x="${x + 8}" y="${y + 18}" fill="white" stroke="black" paint-order="stroke">${label}</text>`;
   }));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${columns * cellWidth}" height="${rows * cellHeight}" viewBox="0 0 ${columns * cellWidth} ${rows * cellHeight}"><rect width="100%" height="100%" fill="black"/>${images.join("")}</svg>`;
   await mkdir(runtime.artifacts.localRoot, { recursive: true });
@@ -515,6 +573,55 @@ async function buildContactSheet(runtime: ReplayMcpRuntime, frames: ArtifactReco
   await writeFile(path, svg, "utf8");
   return await runtime.artifacts.registerLocal(path, "image/svg+xml", { provenance: { source_frame_ids: frames.map((item) => item.id) } });
 }
+
+function validateTimeOrFrameRange(value: Record<string, unknown>, context: z.RefinementCtx): void {
+  const hasTime = value.start_us !== undefined || value.end_us !== undefined;
+  const hasFrames = value.start_frame !== undefined || value.end_frame !== undefined;
+  if (hasTime && hasFrames) context.addIssue({ code: "custom", message: "use either microseconds or frames, not both" });
+  if (hasTime && (typeof value.start_us !== "number" || typeof value.end_us !== "number" || value.end_us <= value.start_us)) context.addIssue({ code: "custom", message: "start_us and end_us must form a positive range" });
+  if (hasFrames && (typeof value.start_frame !== "number" || typeof value.end_frame !== "number" || value.end_frame <= value.start_frame)) context.addIssue({ code: "custom", message: "start_frame and end_frame must form a positive range" });
+}
+
+function normalizeOutputRange(args: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...args };
+  if (typeof args.start_frame === "number" && typeof args.end_frame === "number") {
+    const fps = typeof args.fps === "number" ? args.fps : 30;
+    normalized.start_us = Math.round(args.start_frame * 1_000_000 / fps);
+    normalized.end_us = Math.round(args.end_frame * 1_000_000 / fps);
+  }
+  delete normalized.start_frame; delete normalized.end_frame;
+  return normalized;
+}
+
+function timelineDurationUs(timeline: Record<string, unknown>): number {
+  let maximum = 0;
+  if (!isObject(timeline.tracks)) return maximum;
+  for (const frames of Object.values(timeline.tracks)) if (Array.isArray(frames)) for (const frame of frames) {
+    if (isObject(frame) && typeof frame.time_us === "number") maximum = Math.max(maximum, frame.time_us);
+  }
+  return maximum;
+}
+
+async function requireRenderValidation(runtime: ReplayMcpRuntime, args: Record<string, unknown>): Promise<void> {
+  const preset = args.preset === "preview_720p" ? "preview" : args.preset ?? "high_quality";
+  if (preset === "preview" || preset === "draft_360p") return;
+  if (typeof args.validation_job_id !== "string") throw new SidecarError("invalid_request", "final-quality renders require validation_job_id from replay_validate_range");
+  const validation = runtime.jobs.get(args.validation_job_id);
+  if (!validation || validation.status !== "completed" || validation.result?.purpose !== "replay_range_validation" || validation.result.valid !== true) {
+    throw new SidecarError("conflict", "validation_job_id is not a successful replay range validation");
+  }
+  const { result } = await runtime.read("timeline.get", args);
+  const timeline = objectResult(result);
+  if (validation.result.timeline_revision !== timeline.revision) throw new SidecarError("conflict", "the replay timeline changed after range validation");
+  const expectedStart = typeof args.start_us === "number" ? args.start_us : 0;
+  const expectedEnd = typeof args.end_us === "number" ? args.end_us : timelineDurationUs(timeline);
+  if (validation.result.start_us !== expectedStart || validation.result.end_us !== expectedEnd) {
+    throw new SidecarError("conflict", "render range does not match the validated output range");
+  }
+}
+
+function formatTime(timeUs: number): string { return `${(timeUs / 1_000_000).toFixed(2)}s`; }
+function escapeXml(value: string): string { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;" }[character]!)); }
 
 function ok(message: string, structuredContent: Record<string, unknown>, extra: ToolContent[] = []): ToolResult {
   return { content: [{ type: "text", text: message }, ...extra], structuredContent };

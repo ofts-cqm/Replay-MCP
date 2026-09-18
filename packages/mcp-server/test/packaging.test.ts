@@ -53,13 +53,13 @@ describe("portable and Codex plugin packaging", () => {
       env: { ...stringEnvironment(process.env), REPLAY_MCP_DATA_DIR: resolve(dataRoot, "data") },
       stderr: "pipe",
     });
-    const client = new Client({ name: "plugin-startup-smoke", version: "1.0.0" });
+    const client = new Client({ name: "plugin-startup-smoke", version: "1.0.0" }, { versionNegotiation: { mode: "legacy" } });
     let stderr = "";
     transport.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     try {
       await client.connect(transport);
       const tools = await client.listTools();
-      expect(tools.tools, stderr).toHaveLength(36);
+      expect(tools.tools, stderr).toHaveLength(38);
       const status = await client.callTool({ name: "system_status", arguments: {} });
       expect(status.isError, stderr).not.toBe(true);
       expect(status.structuredContent).toMatchObject({ state: "offline" });

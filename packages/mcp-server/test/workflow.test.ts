@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/client";
@@ -37,8 +37,8 @@ describe("in-process MCP filmmaking workflow", () => {
     await client.connect(pair[0]);
 
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(36);
-    expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(36);
+    expect(tools.tools).toHaveLength(38);
+    expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(38);
 
     expect(structured(await call(client, "system_status", {})).state).toBe("online");
     expect(structured(await call(client, "control_acquire", {})).lease_id).toBeTypeOf("string");
@@ -58,8 +58,8 @@ describe("in-process MCP filmmaking workflow", () => {
     const stopped = structured(await call(client, "recording_stop", {}));
     expect((stopped.result as Record<string, unknown>).status).toBe("pending_finalization");
     const finalizationJob = stopped.finalization_job as Record<string, unknown>;
+    await call(client, "recording_finalize_and_open", { finalization_job_id: finalizationJob.id });
     await waitFor(async () => (structured(await call(client!, "job_get", { job_id: finalizationJob.id })).job as Record<string, unknown>).status === "completed");
-    await call(client, "replay_open", { path: "take.mcpr" });
     const timeline = structured(await call(client, "replay_timeline_get", {})).result as Record<string, unknown>;
     await call(client, "replay_timeline_apply", { base_revision: timeline.revision, operations: [{ op: "upsert", track: "camera_position", time_us: 0, value: { x: 0, y: 64, z: 0 } }] });
 
@@ -67,8 +67,12 @@ describe("in-process MCP filmmaking workflow", () => {
     const previewJob = preview.job as Record<string, unknown>;
     await waitFor(async () => (structured(await call(client!, "job_get", { job_id: previewJob.id })).job as Record<string, unknown>).status === "completed");
 
+    const validation = structured(await call(client, "replay_validate_range", { start_us: 0, end_us: 1_000_000, frames: 2 }));
+    const validationJob = validation.job as Record<string, unknown>;
+    await waitFor(async () => (structured(await call(client!, "job_get", { job_id: validationJob.id })).job as Record<string, unknown>).status === "completed");
+
     expect((structured(await call(client, "render_validate", { output: "clip.mp4" })).result as Record<string, unknown>).valid).toBe(true);
-    const render = structured(await call(client, "render_start", { output: "clip.mp4", preset: "preview_720p" }));
+    const render = structured(await call(client, "render_start", { output: "clip.mp4", preset: "high_quality", start_us: 0, end_us: 1_000_000, validation_job_id: validationJob.id }));
     const renderJob = render.job as Record<string, unknown>;
     await waitFor(async () => (structured(await call(client!, "job_get", { job_id: renderJob.id })).job as Record<string, unknown>).status === "completed");
     const artifacts = structured(await call(client, "artifact_list", {})).artifacts as Record<string, unknown>[];
@@ -85,6 +89,19 @@ describe("in-process MCP filmmaking workflow", () => {
     expect((handoff.artifact as Record<string, unknown>).resource_uri).toMatch(/^replay-mcp:\/\/artifact\//);
     expect(structured(await call(client, "control_release", {})).released).toBe(true);
   }, 20_000);
+
+  it("hot-reloads a persisted game directory without restarting the sidecar", async () => {
+    const root = await mkdtemp(join(tmpdir(), "replay-mcp-hot-discovery-"));
+    const dataDir = join(root, "data");
+    const configPath = join(dataDir, "config.json");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(configPath, JSON.stringify({ storage_version: 1, game_dirs: [] }));
+    built = await buildServer({ dataDir, gameDirs: [join(root, "missing")], guessedGameDirs: [], configFiles: [configPath], discoveryIntervalMs: 60_000, command: "serve" });
+    fake = await createFakeBridge(join(root, "hot-game"));
+    await writeFile(configPath, JSON.stringify({ storage_version: 1, game_dirs: [fake.gameDir] }));
+    await built.runtime.discovery.discoverOnce();
+    expect(built.runtime.client().descriptor.instanceId).toBe(fake.instanceId);
+  });
 });
 
 async function call(client: Client, name: string, args: Record<string, unknown>) {

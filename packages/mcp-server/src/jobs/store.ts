@@ -11,6 +11,7 @@ export interface JobRecord {
   status: JobStatus;
   created_at: string;
   updated_at: string;
+  duration_ms?: number;
   instance_id?: string;
   project_id?: string;
   progress: number;
@@ -32,12 +33,16 @@ export class JobStore {
   readonly #attached = new WeakSet<BridgeClient>();
   readonly #aborters = new Map<string, AbortController>();
   readonly #sessionId: string;
+  readonly #jobStarted: ((instanceId: string, jobId: string) => void) | undefined;
+  readonly #jobFinished: ((instanceId: string, jobId: string) => void) | undefined;
 
-  constructor(dataDir: string, artifacts: ArtifactStore, audit: AuditLog, sessionId: string) {
+  constructor(dataDir: string, artifacts: ArtifactStore, audit: AuditLog, sessionId: string,
+              hooks: { started?: (instanceId: string, jobId: string) => void; finished?: (instanceId: string, jobId: string) => void } = {}) {
     this.#jobs = new JsonCollection(dataDir, "jobs/index.json");
     this.#artifacts = artifacts;
     this.#audit = audit;
     this.#sessionId = sessionId;
+    this.#jobStarted = hooks.started; this.#jobFinished = hooks.finished;
   }
   async load(): Promise<void> {
     await this.#jobs.load();
@@ -71,9 +76,18 @@ export class JobStore {
   async update(id: string, patch: Partial<JobRecord>): Promise<JobRecord> {
     const existing = this.#jobs.get(id);
     if (!existing) throw new Error(`job ${id} not found`);
-    const updated = { ...existing, ...patch, id, updated_at: new Date().toISOString() };
+    const terminal = patch.status !== undefined && ["completed", "failed", "cancelled"].includes(patch.status);
+    const becameTerminal = terminal && !["completed", "failed", "cancelled"].includes(existing.status);
+    const becameRunning = patch.status === "running" && existing.status === "queued";
+    const now = new Date();
+    const updated = { ...existing, ...patch, id, updated_at: now.toISOString(), ...(becameTerminal ? { duration_ms: Math.max(0, now.getTime() - Date.parse(existing.created_at)) } : {}) };
     await this.#jobs.set(updated);
-    if (["completed", "failed", "cancelled"].includes(updated.status)) this.#aborters.delete(id);
+    if (becameRunning && existing.instance_id) this.#jobStarted?.(existing.instance_id, id);
+    if (becameTerminal) {
+      this.#aborters.delete(id);
+      if (existing.instance_id) this.#jobFinished?.(existing.instance_id, id);
+      await this.#audit.append("job.finished", { job_id: id, kind: updated.kind, status: updated.status, duration_ms: updated.duration_ms });
+    }
     return updated;
   }
 
@@ -88,6 +102,7 @@ export class JobStore {
     this.#attached.add(client);
     client.on("event", (method: string, params: Record<string, unknown>) => {
       if (method.startsWith("render.")) void this.#bridgeEvent(client, method, params);
+      else if (method === "recording.finalization") void this.#finalizationEvent(client, params);
       else if (method === "recording.changed") void this.#recordingEvent(client, params);
     });
   }
@@ -161,5 +176,29 @@ export class JobStore {
     } catch (error) {
       await this.update(job.id, { status: "failed", failure: { code: "artifact_verification_failed", message: error instanceof Error ? error.message : String(error) } });
     }
+  }
+
+  async #finalizationEvent(client: BridgeClient, params: Record<string, unknown>): Promise<void> {
+    const bridgeId = typeof params.job_id === "string" ? params.job_id : undefined;
+    if (!bridgeId) return;
+    const job = this.list().find((item) => item.bridge_job_id === bridgeId && item.instance_id === client.descriptor.instanceId);
+    if (!job) return;
+    if (params.status === "running") {
+      await this.update(job.id, { progress: typeof params.progress === "number" ? params.progress : job.progress, result: { ...job.result, ...params } });
+      return;
+    }
+    let artifacts: ArtifactRecord[] = [];
+    if (params.artifact) {
+      try { artifacts = [await this.#artifacts.register(params.artifact, client.descriptor.instanceId, client.hello?.allowed_artifact_roots ?? [])]; }
+      catch (error) {
+        await this.update(job.id, { status: "failed", failure: { code: "artifact_verification_failed", message: error instanceof Error ? error.message : String(error) } }); return;
+      }
+    }
+    const completed = params.status === "completed" && artifacts.length === 1;
+    await this.update(job.id, {
+      status: completed ? "completed" : "failed", progress: completed ? 1 : job.progress,
+      result_artifact_ids: artifacts.map((artifact) => artifact.id), result: { ...job.result, ...params },
+      ...(completed ? {} : { failure: { code: "recording_recoverable", message: typeof params.error === "string" ? params.error : "recording finalization requires recovery" } }),
+    });
   }
 }

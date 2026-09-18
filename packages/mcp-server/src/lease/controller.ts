@@ -9,6 +9,7 @@ interface OwnedLease {
   timer: NodeJS.Timeout;
   active: number;
   lastActivity: number;
+  jobs: Set<string>;
 }
 
 export class LeaseController {
@@ -31,7 +32,7 @@ export class LeaseController {
     const intervalMs = client.hello?.lease_policy.heartbeat_interval_ms;
     if (!intervalMs) throw new SidecarError("protocol_mismatch", "bridge did not advertise lease heartbeat policy");
     const owned: OwnedLease = {
-      lease, client, active: 0, lastActivity: Date.now(),
+      lease, client, active: 0, lastActivity: Date.now(), jobs: new Set(),
       timer: setInterval(() => { void this.#heartbeat(client.descriptor.instanceId); }, intervalMs),
     };
     owned.timer.unref();
@@ -81,6 +82,16 @@ export class LeaseController {
     await Promise.allSettled([...this.#owned.values()].map(async ({ client }) => await this.release(client)));
   }
 
+  holdJob(instanceId: string, jobId: string): void {
+    const owned = this.#owned.get(instanceId);
+    if (owned) { owned.jobs.add(jobId); owned.lastActivity = Date.now(); }
+  }
+
+  releaseJob(instanceId: string, jobId: string): void {
+    const owned = this.#owned.get(instanceId);
+    if (owned) { owned.jobs.delete(jobId); owned.lastActivity = Date.now(); }
+  }
+
   async #heartbeat(instanceId: string): Promise<void> {
     const owned = this.#owned.get(instanceId);
     if (!owned) return;
@@ -88,7 +99,7 @@ export class LeaseController {
       const lease = LeaseSchema.parse(await owned.client.call("lease.heartbeat", {
         lease_id: owned.lease.lease_id,
         fence: owned.lease.fence,
-        active: owned.active > 0 || Date.now() - owned.lastActivity < 2_000,
+        active: owned.active > 0 || owned.jobs.size > 0 || Date.now() - owned.lastActivity < 2_000,
       }, { deadlineMs: Math.max(2_000, Math.floor((owned.client.hello?.lease_policy.ttl_ms ?? 15_000) / 2)) }));
       owned.lease = lease;
     } catch (error) {

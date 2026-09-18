@@ -18,19 +18,19 @@ const transport = new StdioClientTransport({
   env: { ...environment, REPLAY_MCP_DATA_DIR: resolve(dataRoot, "data") },
   stderr: "pipe",
 });
-const client = new Client({ name: "replay-plugin-smoke", version: "1.0.0" });
+const client = new Client({ name: "replay-plugin-smoke", version: "1.0.0" }, { versionNegotiation: { mode: "legacy" } });
 let stderr = "";
 transport.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
 
 try {
   await client.connect(transport);
   const tools = await client.listTools();
-  if (tools.tools.length !== 36) throw new Error(`expected 36 tools, received ${tools.tools.length}`);
+  if (tools.tools.length !== 38) throw new Error(`expected 38 tools, received ${tools.tools.length}`);
   const status = await client.callTool({ name: "system_status", arguments: {} });
   if (status.isError || status.structuredContent?.state !== "offline") {
     throw new Error(`unexpected offline status: ${JSON.stringify(status.structuredContent)}`);
   }
-  process.stdout.write(`Plugin stdio smoke passed: ${pluginRoot} (36 tools, offline status)\n`);
+  process.stdout.write(`Plugin stdio smoke passed: ${pluginRoot} (38 tools, offline status)\n`);
 } catch (error) {
   if (stderr) process.stderr.write(stderr);
   throw error;
