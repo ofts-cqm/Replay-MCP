@@ -19,3 +19,7 @@ hs_err_pid*
 
 # Common working directory
 run
+
+node_modules/
+packages/mcp-server/dist/
+packages/mcp-server/protocol/

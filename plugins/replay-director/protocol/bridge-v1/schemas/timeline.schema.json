@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://replay-mcp.local/schemas/bridge-v1/timeline.schema.json",
+  "title": "Replay MCP timeline state or mutation",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["revision", "tracks"],
+      "properties": {
+        "revision": {"type": "string", "minLength": 1},
+        "tracks": {"type": "object"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "undo_token": {"type": "string"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["request_id", "base_revision", "operations", "lease_id", "fence"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "base_revision": {"type": "string", "minLength": 1},
+        "operations": {"type": "array", "minItems": 1, "maxItems": 1024, "items": {"type": "object"}},
+        "lease_id": {"type": "string", "minLength": 32},
+        "fence": {"type": "integer", "minimum": 1}
+      }
+    }
+  ]
+}

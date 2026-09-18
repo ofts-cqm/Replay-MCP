@@ -1,0 +1,17 @@
+{
+  "name": "replay-mcp-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w replay-mcp-server",
+    "bundle:plugin": "npm run bundle:plugin -w replay-mcp-server",
+    "test": "npm run test -w replay-mcp-server",
+    "typecheck": "npm run typecheck -w replay-mcp-server"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

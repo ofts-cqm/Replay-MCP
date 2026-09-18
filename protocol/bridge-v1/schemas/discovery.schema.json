@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://replay-mcp.local/schemas/bridge-v1/discovery.schema.json",
+  "title": "Replay MCP instance discovery descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["instanceId", "processId", "port", "createdAt", "displayName", "gameDirectory", "protocolVersion", "modVersion", "minecraftVersion", "replayModVersion"],
+  "properties": {
+    "instanceId": {"type": "string", "format": "uuid"},
+    "processId": {"type": "integer", "minimum": 1},
+    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+    "gameDirectory": {"type": "string", "minLength": 1},
+    "protocolVersion": {"const": "replay-mcp.bridge/1"},
+    "modVersion": {"type": "string", "minLength": 1},
+    "minecraftVersion": {"type": "string", "minLength": 1},
+    "replayModVersion": {"type": "string", "minLength": 1}
+  }
+}

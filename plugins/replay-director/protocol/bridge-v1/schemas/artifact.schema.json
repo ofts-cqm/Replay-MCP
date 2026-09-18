@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://replay-mcp.local/schemas/bridge-v1/artifact.schema.json",
+  "title": "Replay MCP artifact descriptor",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["path", "mime_type", "size", "sha256", "complete"],
+  "properties": {
+    "path": {"type": "string", "minLength": 1},
+    "mime_type": {"type": "string", "pattern": "^[a-z0-9.+-]+/[a-z0-9.+-]+$"},
+    "size": {"type": "integer", "minimum": 0},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "complete": {"type": "boolean"},
+    "width": {"type": "integer", "minimum": 1},
+    "height": {"type": "integer", "minimum": 1},
+    "capture_tick": {"type": "integer", "minimum": 0},
+    "snapshot": {"type": "object"}
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "replay-mcp-local",
+  "interface": {
+    "displayName": "Replay MCP Local"
+  },
+  "plugins": [
+    {
+      "name": "replay-director",
+      "source": {
+        "source": "local",
+        "path": "./plugins/replay-director"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

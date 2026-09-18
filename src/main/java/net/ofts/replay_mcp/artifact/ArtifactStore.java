@@ -16,6 +16,7 @@ public final class ArtifactStore {
     private final PathPolicy paths;
 
     public ArtifactStore(Path root) throws IOException { paths = new PathPolicy(root); }
+    public Path root() { return paths.root(); }
     public Path allocate(String relative) { return paths.resolveForWrite(relative); }
 
     public JsonObject describe(Path file, String mimeType, int width, int height, boolean complete) throws IOException {

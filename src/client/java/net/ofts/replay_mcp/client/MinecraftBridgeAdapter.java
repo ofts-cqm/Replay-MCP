@@ -62,6 +62,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private Object observedScreen;
     private boolean logicalRecording;
     private String takeId;
+    private String pendingTakeId;
     private Path pendingRecordingPath;
     private long pendingRecordingSize = -1;
     private int pendingRecordingStableTicks;
@@ -93,6 +94,28 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             result.addProperty("runtime_mode", replayHandler() != null ? "replay_loaded" : minecraft.level != null ? "live_idle" : "game_offline");
             result.addProperty("replay_ready", replayHandler() != null && replayHandler().getCameraEntity() != null);
             result.addProperty("bridge_enabled", config.bridgeEnabled);
+            JsonObject leasePolicy = new JsonObject();
+            leasePolicy.addProperty("ttl_ms", config.leaseTtlSeconds * 1_000L);
+            leasePolicy.addProperty("heartbeat_interval_ms", config.expectedHeartbeatSeconds * 1_000L);
+            leasePolicy.addProperty("idle_ceiling_ms", config.idleCeilingSeconds * 1_000L);
+            result.add("lease_policy", leasePolicy);
+            JsonObject commandPolicy = new JsonObject();
+            commandPolicy.addProperty("enabled", config.commandsEnabled);
+            commandPolicy.addProperty("locally_managed", true);
+            commandPolicy.addProperty("deny_pattern_count", config.commandDenyPatterns.size());
+            result.add("command_policy", commandPolicy);
+            JsonObject flightPolicy = new JsonObject();
+            flightPolicy.addProperty("automation_enabled", config.flightAutomationEnabled);
+            flightPolicy.addProperty("requires_granted_ability", true);
+            flightPolicy.addProperty("currently_granted", minecraft.player != null && minecraft.player.getAbilities().mayfly);
+            result.add("flight_policy", flightPolicy);
+            JsonArray roots = new JsonArray();
+            roots.add(artifacts.root().toString());
+            Path normalizedGameDir = minecraft.gameDirectory.toPath().toAbsolutePath().normalize();
+            roots.add(normalizedGameDir.resolve("replay_recordings").toString());
+            roots.add(normalizedGameDir.resolve("replay_videos").toString());
+            roots.add(normalizedGameDir.resolve(".replay-mcp/working").toString());
+            result.add("allowed_artifact_roots", roots);
             return result;
         });
     }
@@ -278,7 +301,10 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                 Path temporary = output.resolveSibling(output.getFileName() + ".tmp");
                 captured.writeToFile(temporary); moveAtomic(temporary, output);
                 JsonObject result = artifacts.describe(output, "image/png", captured.getWidth(), captured.getHeight(), true);
-                result.addProperty("view", view); result.add("annotations", annotations); result.add("snapshot", snapshot()); return result;
+                JsonObject synchronizedSnapshot = snapshot();
+                result.addProperty("view", view); result.add("annotations", annotations);
+                result.addProperty("capture_tick", synchronizedSnapshot.get("tick").getAsLong());
+                result.add("snapshot", synchronizedSnapshot); return result;
             }
         } catch (TimeoutException e) { throw new BridgeException(BridgeError.TIMEOUT, "frame capture timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new BridgeException(BridgeError.CANCELLED, "frame capture interrupted"); }
@@ -612,6 +638,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             JsonObject result = recordingStatus(); result.addProperty("status", "pending_finalization");
             result.addProperty("take_id", takeId); result.addProperty("recoverable", true);
             pendingRecordingPath = ((PacketListenerAccessor) listener).replayMcp$outputPath().toAbsolutePath().normalize();
+            pendingTakeId = takeId;
             pendingRecordingSize = -1; pendingRecordingStableTicks = 0; takeId = null;
             events.publish("recording.changed", result.deepCopy()); return result;
         });
@@ -625,11 +652,13 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             if (size != pendingRecordingSize) { pendingRecordingSize = size; pendingRecordingStableTicks = 0; return; }
             if (++pendingRecordingStableTicks < 20) return;
             JsonObject event = new JsonObject(); event.addProperty("status", "finalized"); event.addProperty("recoverable", true);
+            if (pendingTakeId != null) event.addProperty("take_id", pendingTakeId);
             event.add("artifact", describeFile(pending, "application/x-minecraft-replay", 0, 0, true));
-            events.publish("recording.changed", event); pendingRecordingPath = null; pendingRecordingSize = -1; pendingRecordingStableTicks = 0;
+            events.publish("recording.changed", event); pendingRecordingPath = null; pendingTakeId = null; pendingRecordingSize = -1; pendingRecordingStableTicks = 0;
         } catch (IOException failure) {
             JsonObject event = new JsonObject(); event.addProperty("status", "recoverable"); event.addProperty("path", pending.toString());
-            events.publish("recording.changed", event); pendingRecordingPath = null;
+            if (pendingTakeId != null) event.addProperty("take_id", pendingTakeId);
+            events.publish("recording.changed", event); pendingRecordingPath = null; pendingTakeId = null;
         }
     }
 
@@ -699,7 +728,8 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         try {
             SPTimeline timeline = ReplayModSimplePathing.instance == null ? null : ReplayModSimplePathing.instance.getCurrentTimeline();
             if (timeline != null) openReplay.writeTimelines(timeline, java.util.Map.of("Replay MCP", timeline.getTimeline()));
-            openReplay.saveTo(destination.toFile()); replayDirty = false; JsonObject result = success(); result.addProperty("path", destination.toString()); return result;
+            openReplay.saveTo(destination.toFile()); replayDirty = false; JsonObject result = success(); result.addProperty("path", destination.toString());
+            result.add("artifact", describeFile(destination, "application/x-minecraft-replay", 0, 0, true)); return result;
         }
         catch (IOException e) { throw new BridgeException(BridgeError.INTERNAL_ERROR, "cannot save replay"); }
     }

@@ -1,0 +1,53 @@
+[
+  {
+    "schema": "discovery.schema.json",
+    "value": {
+      "instanceId": "11111111-1111-4111-8111-111111111111",
+      "processId": 4242,
+      "port": 43123,
+      "createdAt": "2026-09-17T00:00:00Z",
+      "displayName": "Minecraft 26.2",
+      "gameDirectory": "/tmp/minecraft",
+      "protocolVersion": "replay-mcp.bridge/1",
+      "modVersion": "0.1.0",
+      "minecraftVersion": "26.2",
+      "replayModVersion": "26.2-2.6.27"
+    }
+  },
+  {
+    "schema": "rpc.schema.json",
+    "value": {"jsonrpc": "2.0", "id": "7", "method": "system.hello", "params": {"protocol": "replay-mcp.bridge/1"}}
+  },
+  {
+    "schema": "rpc.schema.json",
+    "value": {"jsonrpc": "2.0", "id": "7", "result": {"healthy": true}}
+  },
+  {
+    "schema": "rpc.schema.json",
+    "value": {"jsonrpc": "2.0", "method": "render.progress", "params": {"job_id": "job-1", "progress": 0.5}}
+  },
+  {
+    "schema": "artifact.schema.json",
+    "value": {"path": "/tmp/minecraft/.replay-mcp/artifacts/frame.png", "mime_type": "image/png", "size": 68, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "complete": true, "width": 1, "height": 1, "capture_tick": 80, "snapshot": {"tick": 80}}
+  },
+  {
+    "schema": "lease.schema.json",
+    "value": {"lease_id": "01234567890123456789012345678901", "fence": 3, "owner_label": "test director", "expires_at": "2026-09-17T00:00:15Z"}
+  },
+  {
+    "schema": "status.schema.json",
+    "value": {"protocol": "replay-mcp.bridge/1", "instance_id": "11111111-1111-4111-8111-111111111111", "process_id": 4242, "runtime_mode": "live_idle", "capabilities": {}, "lease": {"held": false, "epoch": 0}, "lease_policy": {"ttl_ms": 15000, "heartbeat_interval_ms": 5000, "idle_ceiling_ms": 300000}, "command_policy": {"enabled": false, "locally_managed": true}, "flight_policy": {"automation_enabled": true, "requires_granted_ability": true, "currently_granted": false}, "allowed_artifact_roots": ["/tmp/minecraft/.replay-mcp/artifacts"]}
+  },
+  {
+    "schema": "action.schema.json",
+    "value": {"request_id": "action-1", "actions": [{"kind": "turn", "yaw": 15, "pitch": 0}, {"kind": "wait_ticks", "ticks": 2}], "on_failure": "stop", "capture": "after", "lease_id": "01234567890123456789012345678901", "fence": 3}
+  },
+  {
+    "schema": "timeline.schema.json",
+    "value": {"revision": "2", "tracks": {"replay_time": [], "camera_position": []}, "warnings": [], "undo_token": "undo-1"}
+  },
+  {
+    "schema": "render.schema.json",
+    "value": {"job_id": "render-1", "status": "running", "progress": 0.5, "frames_done": 15, "total_frames": 30}
+  }
+]

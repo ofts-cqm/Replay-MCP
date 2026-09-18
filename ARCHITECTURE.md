@@ -1,26 +1,28 @@
 # Replay MCP Architecture and Interface Scope
 
-Status: the Minecraft-side Fabric submod and private bridge are implemented.
-The Replay MCP sidecar, public MCP server, production project store, Codex
-plugin/workflows, and editor integrations are not yet implemented. End-to-end
-workflow acceptance testing is intentionally deferred until the Codex-facing
-workflows are complete.
+Status: the Minecraft-side Fabric submod, private bridge, Node sidecar, complete
+36-tool public MCP surface, production project store, and minimal Replay
+Director plugin are implemented. Automated fake-bridge acceptance passes. The
+user-attended graphical Minecraft/Replay Mod/render smoke remains pending, so
+the complete real workflow is not yet marked validated. Optional editor
+integrations remain future work.
 
 Implementation status in this document describes code coverage, not completed
-workflow validation. Unit checks, builds, and direct bridge smoke checks may be
-used during development, but the full testing pass remains pending.
+workflow validation. Unit/contract checks, builds, package validation, and the
+fake-bridge MCP workflow have passed; only the live graphical workflow pass is
+still pending.
 
 | Scope | Status |
 | --- | --- |
 | Fabric submod service graph and local human controls | **Implemented** |
-| Authenticated mod-to-sidecar bridge and discovery | **Implemented (mod/server side)** |
-| Minecraft observation and normal-input action primitives | **Implemented (mod side)** |
-| Replay Mod recording, replay, timeline, and render adapters | **Implemented (mod side)** |
-| Public MCP tools, resources, jobs, and bridge client | **Pending: sidecar** |
-| Production manifests and editor-neutral handoff | **Pending: sidecar** |
-| Codex plugin and filmmaking workflows | **Pending** |
+| Authenticated mod-to-sidecar bridge and discovery | **Implemented** |
+| Minecraft observation and normal-input action primitives | **Implemented** |
+| Replay Mod recording, replay, timeline, and render adapters | **Implemented** |
+| Public MCP tools, resources, jobs, and bridge client | **Implemented; automated acceptance passed** |
+| Production manifests and editor-neutral handoff | **Implemented; automated acceptance passed** |
+| Codex plugin and filmmaking workflows | **Minimal workflow implemented, validated, and locally installed** |
 | Optional editor MCP profiles/integrations | **Pending / optional** |
-| Complete end-to-end workflow acceptance testing | **Deferred until Codex workflows are complete** |
+| Complete end-to-end workflow acceptance testing | **Automated fake bridge passed; live user-attended smoke pending** |
 
 Replay MCP is a client-side Fabric submod for Replay Mod plus a local MCP
 server and a Codex plugin. Together they let an AI agent:
@@ -160,11 +162,11 @@ The sidecar may be implemented in any suitable language. The protocol between
 the sidecar and mod is the stable boundary; implementation language is not part
 of the public contract.
 
-## 3. Runtime modes and state transitions — Implemented (Minecraft side)
+## 3. Runtime modes and state transitions — Implemented
 
 **Implementation status:** Runtime mode is derived from the active Minecraft
-and Replay Mod state in the Fabric submod. Sidecar job/session projection of
-those modes remains pending.
+and Replay Mod state in the Fabric submod and projected with persistent
+sidecar job/session state.
 
 ```mermaid
 stateDiagram-v2
@@ -199,13 +201,13 @@ Rules:
 
 ## 4. Public MCP tool surface
 
-**Implementation status:** Pending in the sidecar. The Minecraft-backed
-primitives required by sections 4.2 through 4.7 are implemented in the Fabric
-submod and exposed through the private bridge, but these public MCP tool names,
-schemas, resource conversion, job orchestration, and project-level composition
-still belong to the sidecar/Codex phase.
+**Implementation status:** All 36 public tools below are registered by the
+TypeScript sidecar with Zod inputs, typed error results, structured content,
+tool annotations, instance selection, lease enforcement, artifact conversion,
+persistent jobs, and project composition. The full surface passes the
+in-process MCP/fake-WebSocket acceptance workflow.
 
-The following is the proposed complete public surface. Names are intentionally
+The following is the implemented complete public surface. Names are intentionally
 domain-prefixed so tool discovery remains understandable when an editor MCP is
 also installed.
 
@@ -619,7 +621,7 @@ Renders a high-quality still at an exact timeline time for framing, thumbnail,
 or final-quality review. This differs from `replay_observe`, which is optimized
 for fast interactive inspection.
 
-### 4.8 Production project and editor handoff — Pending (sidecar)
+### 4.8 Production project and editor handoff — Implemented (sidecar)
 
 The sidecar maintains a small editor-neutral production model:
 
@@ -671,11 +673,12 @@ The initial format is versioned Replay MCP JSON. Optional OTIO, EDL, FCP XML,
 or editor-native translators can be added later without changing the core
 project model.
 
-## 5. MCP resources — Pending (sidecar)
+## 5. MCP resources — Implemented (sidecar)
 
-The mod already stages large outputs atomically and returns bounded artifact
-metadata, canonical paths, MIME types, dimensions, sizes, and checksums. MCP
-resource registration and serving remain sidecar responsibilities.
+The mod stages large outputs atomically and returns bounded artifact metadata,
+canonical paths, MIME types, dimensions, sizes, and checksums. The sidecar
+confines and re-hashes each registered path, indexes it atomically, and serves
+it through the templates below.
 
 Tools mutate state or run bounded queries. Larger immutable/read-only content
 is exposed as MCP resources:
@@ -692,14 +695,15 @@ is exposed as MCP resources:
 Media resources should support metadata-first inspection so the model does not
 accidentally load a full video when a thumbnail or manifest is sufficient.
 
-## 6. Mod-to-sidecar bridge interface — Implemented (mod/server side)
+## 6. Mod-to-sidecar bridge interface — Implemented
 
 **Implementation status:** The authenticated loopback WebSocket server,
 versioned JSON-RPC protocol, discovery publication, token authentication,
 capability/status negotiation, request correlation, idempotency, deadlines,
 cancellation, events, artifact descriptors, and lease enforcement are
-implemented in the Fabric submod. The sidecar bridge client and its mapping to
-public MCP tools remain pending.
+implemented in the Fabric submod. The sidecar client implements authenticated
+hello, identity/PID validation, correlation, deadlines, cancellation,
+rediscovery, event routing, and the public MCP mapping.
 
 This is an internal, versioned, authenticated protocol. It is not exposed to
 the network and is not a second public automation API.
@@ -900,35 +904,24 @@ Where Replay Mod lacks a native representation for an optional track or piece
 of metadata, Replay MCP stores it in versioned sidecar data and makes that fact
 visible through capability and provenance fields.
 
-## 8. Codex plugin package — Pending
+## 8. Codex plugin package — Minimal workflow implemented
 
 ```text
-replay-director-plugin/
+plugins/replay-director/
 ├── plugin.json
 ├── mcp.json
-├── skills/
-│   ├── replay-mcp-tool-use/
-│   ├── production-planning/
-│   ├── scene-staging-and-transition/
-│   ├── gameplay-performance/
-│   ├── cinematic-camera-design/
-│   ├── continuity-and-coverage/
-│   ├── replay-editing/
-│   ├── visual-review-and-iteration/
-│   ├── replay-rendering/
-│   ├── trailer-and-montage/
-│   ├── tutorial-and-documentary/
-│   ├── machinima-and-dialogue/
-│   └── post-production-handoff/
-└── optional-integrations/
-    ├── resolve/
-    ├── premiere/
-    └── other-editor-profiles/
+├── .codex-plugin/plugin.json
+├── .mcp.json
+├── bin/replay-mcp-server.mjs
+├── protocol/bridge-v1/
+└── skills/replay-director-workflow/SKILL.md
 ```
 
-The exact set of artistic genre skills can grow without changing the MCP
-protocol. Skills should define shot language, pacing, coverage, continuity,
-review criteria, and recovery procedures rather than reimplementing tools.
+The initial package intentionally contains one workflow skill: capability and
+status checks, projects, exclusive control, observe-act-verify direction,
+logical takes, replay editing, preview, rendering, handoff, recovery, and
+guaranteed release. More artistic genre skills can grow without changing the
+MCP protocol.
 
 The core plugin registers only Replay MCP. An editor profile supplies guidance
 and optional configuration for a separately installed editor MCP.
@@ -968,13 +961,15 @@ bundled by default; users install it separately. If a future distribution does
 vendor an MCP, that requires a pinned version, security review, license review,
 required notices, and review of transitive dependencies.
 
-## 10. Security and human control — Implemented (Minecraft side)
+## 10. Security and human control — Implemented
 
 **Implementation status:** Local authentication, exclusive fenced control,
 physical-input revocation, F10 controls, F12 emergency stop, input release,
 command opt-in, path confinement, artifact hashing, configuration protection,
-and append-only auditing are implemented in the mod. Sidecar-side project-root
-validation and public MCP session policy remain pending with the sidecar.
+and append-only auditing are implemented in the mod. The sidecar additionally
+implements authenticated-instance root confinement, checksum/size
+reverification, session-owned leases, typed control failures, atomic project
+state, and no automatic reacquisition after lease loss.
 
 - The bridge is local and authenticated.
 - The mod grants at most one exclusive director lease per Minecraft instance;
@@ -993,11 +988,13 @@ validation and public MCP session policy remain pending with the sidecar.
 - Screenshots may expose chat, player names, or server information. Observation
   options include HUD hiding and configured redaction for persisted artifacts.
 
-## 11. End-to-end workflow — Pending Codex/sidecar implementation and testing
+## 11. End-to-end workflow — Implemented; live validation pending
 
-The Minecraft-side calls shown below have bridge implementations. The complete
-workflow is not marked implemented or tested until the sidecar, public MCP
-surface, production model, and Codex workflows can drive it end to end.
+The Minecraft-side calls and Codex/sidecar workflow below are implemented and
+pass an automated authenticated fake-bridge acceptance test. The complete
+workflow is not marked live-validated until a user-attended graphical client
+completes observation, harmless control, recording/finalization, replay edit,
+preview/still, render, artifact registration, and handoff export.
 
 ```mermaid
 sequenceDiagram
@@ -1047,9 +1044,9 @@ sequenceDiagram
 
 ## 12. Scope boundaries
 
-**Implementation status:** The Minecraft-side portions of the included scope
-are implemented. Project/provenance manifests, editor handoff, Codex skills,
-and complete workflow testing remain pending as identified above.
+**Implementation status:** The included Minecraft, sidecar, project/provenance,
+editor handoff, and minimal Codex workflow scope is implemented. Only the live
+graphical acceptance run remains pending as identified above.
 
 Included:
 
@@ -1415,3 +1412,35 @@ The plugin and npm package are separate distribution products:
 - [OpenAI Docs: Package your plugin](https://developers.openai.com/plugins/build/plugins)
 - [MCP TypeScript SDK server package](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/packages/server)
 - [Agent Plugins MCP server configuration](https://agent-plugins.org/plugin-authors/mcp-servers)
+
+### 13.8 Verification snapshot (2026-09-18)
+
+Implemented verification:
+
+- TypeScript strict typecheck passes against Node 20+ and MCP server/client v2;
+- 11 Vitest tests pass across shared schemas, configuration precedence,
+  authenticated WebSocket behavior, competing leases, timeouts, artifact
+  confinement/checksums, project revisions/handoffs, plugin equivalence, and
+  the full in-process MCP/fake-bridge workflow;
+- 15 JUnit tests pass, including the Java half of the shared valid/invalid
+  bridge-fixture contract;
+- production TypeScript build and deterministic plugin bundle succeed;
+- the compatibility plugin and workflow skill pass their validators;
+- `npm pack --dry-run` contains only the declared package files; and
+- the repo-local `replay-mcp-local` marketplace installs and enables the
+  `replay-director` 0.1.0 development build, whose cached bundled executable
+  starts successfully.
+
+Not yet validated:
+
+- a real graphical Minecraft client and framebuffer observation;
+- live human override and lease-expiry behavior against the Fabric mod;
+- Replay Mod connection teardown/finalization and reopening the produced
+  `.mcpr`;
+- real Replay Mod preview/still/video output with FFmpeg; and
+- visual inspection of the final media and exported handoff.
+
+Those live checks require an available prepared client/world and user
+participation at connection/disconnection boundaries. Their absence does not
+invalidate the automated fake-bridge suite, but it prevents claiming complete
+workflow validation.

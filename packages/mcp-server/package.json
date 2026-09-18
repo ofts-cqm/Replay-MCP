@@ -1,11 +1,43 @@
 {
-  "name": "replaymod-mcp",
+  "name": "replay-mcp-server",
   "version": "0.1.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "description": "Local MCP sidecar for Replay MCP and the Replay Mod Fabric bridge",
+  "type": "module",
+  "license": "MIT",
+  "author": "OFTS CQM",
+  "engines": {
+    "node": ">=20"
   },
-  "keywords": [],
-  "type": "commonjs"
+  "bin": {
+    "replay-mcp-server": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE.txt",
+    "protocol/"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-protocol.mjs",
+    "bundle:plugin": "node scripts/bundle-plugin.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "ws": "8.21.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "26.6.1",
+    "@types/ws": "8.18.1",
+    "ajv": "8.20.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  }
 }

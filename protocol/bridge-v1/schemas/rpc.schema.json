@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://replay-mcp.local/schemas/bridge-v1/rpc.schema.json",
+  "title": "Replay MCP JSON-RPC envelope",
+  "oneOf": [
+    {"$ref": "#/definitions/request"},
+    {"$ref": "#/definitions/success"},
+    {"$ref": "#/definitions/failure"},
+    {"$ref": "#/definitions/event"}
+  ],
+  "definitions": {
+    "params": {"type": "object"},
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "pattern": "^[a-z]+\\.[a-z_]+$", "maxLength": 128},
+        "params": {"$ref": "#/definitions/params"}
+      }
+    },
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string"},
+        "result": {}
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "error"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": "string"},
+        "error": {"$ref": "#/definitions/error"}
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "method": {"type": "string", "pattern": "^[a-z]+(?:\\.[a-z_]+)+$"},
+        "params": {"$ref": "#/definitions/params"}
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "data"],
+      "properties": {
+        "code": {"enum": ["protocol_mismatch", "unauthenticated", "invalid_request", "capability_unavailable", "invalid_mode", "control_required", "stale_fence", "control_busy", "conflict", "policy_denied", "timeout", "cancelled", "internal_error", "recording_not_armed"]},
+        "message": {"type": "string"},
+        "data": {"type": "object"}
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "replay-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/bin/replay-mcp-server.mjs",
+        "--data-dir",
+        "${PLUGIN_DATA}"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

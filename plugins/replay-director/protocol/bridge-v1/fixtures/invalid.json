@@ -1,0 +1,11 @@
+[
+  {"schema": "discovery.schema.json", "value": {"instanceId": "not-a-uuid", "processId": 0, "port": 70000}},
+  {"schema": "rpc.schema.json", "value": {"jsonrpc": "1.0", "id": "7", "method": "bad method", "params": {}}},
+  {"schema": "rpc.schema.json", "value": {"jsonrpc": "2.0", "id": "7", "result": {}, "error": {"code": "internal_error", "message": "both", "data": {}}}},
+  {"schema": "artifact.schema.json", "value": {"path": "../escape", "mime_type": "png", "size": -1, "sha256": "bad", "complete": true}},
+  {"schema": "lease.schema.json", "value": {"lease_id": "short", "fence": 0, "owner_label": "", "expires_at": "tomorrow"}},
+  {"schema": "status.schema.json", "value": {"runtime_mode": "unknown", "lease_policy": {"ttl_ms": 1000}}},
+  {"schema": "action.schema.json", "value": {"request_id": "", "actions": []}},
+  {"schema": "timeline.schema.json", "value": {"revision": "", "tracks": []}},
+  {"schema": "render.schema.json", "value": {"job_id": "", "status": "done", "progress": 2}}
+]

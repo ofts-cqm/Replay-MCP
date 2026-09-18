@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "replay-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/bin/replay-mcp-server.mjs",
+        "--data-dir",
+        "${PLUGIN_DATA}"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}
