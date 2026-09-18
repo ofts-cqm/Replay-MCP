@@ -1205,8 +1205,10 @@ The sidecar resolves Minecraft game directories in this order:
    silently trusted.
 
 Custom launcher locations need a one-time `replay-mcp-server configure
---game-dir <path>` operation. When launched from the plugin, the writable
-`${PLUGIN_DATA}` directory is passed as the sidecar data directory. Bridge
+--game-dir <path>` operation. When `--data-dir` is omitted, the sidecar uses
+the operating system's persistent per-user data directory. This avoids making
+plugin startup depend on host-specific variable expansion while keeping state
+outside the versioned plugin installation. Bridge
 tokens remain in the mod's protected discovery directories and are never
 copied into `plugin.json`, `mcp.json`, environment literals, or project files.
 
@@ -1362,12 +1364,8 @@ conceptually:
     "replay-mcp": {
       "type": "stdio",
       "command": "node",
-      "args": [
-        "${PLUGIN_ROOT}/bin/replay-mcp-server.mjs",
-        "--data-dir",
-        "${PLUGIN_DATA}"
-      ],
-      "cwd": "${PLUGIN_ROOT}"
+      "args": ["./bin/replay-mcp-server.mjs"],
+      "cwd": "."
     }
   }
 }
@@ -1377,6 +1375,9 @@ conceptually:
 `packages/mcp-server`; it is not a second source tree. A local marketplace test
 must run the bundle step before installing/copying the plugin, because Codex
 loads the installed plugin copy rather than the workspace source directory.
+The relative launch definition is intentional: both the portable host and the
+Codex compatibility loader resolve it from the installed plugin root, without
+requiring `${PLUGIN_ROOT}` or `${PLUGIN_DATA}` interpolation.
 
 The plugin and npm package are separate distribution products:
 
@@ -1418,18 +1419,21 @@ The plugin and npm package are separate distribution products:
 Implemented verification:
 
 - TypeScript strict typecheck passes against Node 20+ and MCP server/client v2;
-- 11 Vitest tests pass across shared schemas, configuration precedence,
+- 13 Vitest tests pass across shared schemas, configuration precedence,
   authenticated WebSocket behavior, competing leases, timeouts, artifact
   confinement/checksums, project revisions/handoffs, plugin equivalence, and
-  the full in-process MCP/fake-bridge workflow;
+  the full in-process MCP/fake-bridge workflow. This includes launching the
+  bundled server through the exact plugin stdio definition, listing all 36
+  tools, and calling offline `system_status`;
 - 15 JUnit tests pass, including the Java half of the shared valid/invalid
   bridge-fixture contract;
 - production TypeScript build and deterministic plugin bundle succeed;
 - the compatibility plugin and workflow skill pass their validators;
 - `npm pack --dry-run` contains only the declared package files; and
-- the repo-local `replay-mcp-local` marketplace installs and enables the
-  `replay-director` 0.1.0 development build, whose cached bundled executable
-  starts successfully.
+- the repo-local `replay-mcp-local` marketplace installs and enables
+  `replay-director` version `0.1.0+codex.20260918160619`; an MCP client starts
+  the installed cache copy over stdio, lists all 36 tools, and receives its
+  offline status successfully.
 
 Not yet validated:
 

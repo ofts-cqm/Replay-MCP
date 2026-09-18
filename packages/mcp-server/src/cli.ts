@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   };
   process.once("SIGINT", () => { void shutdown("SIGINT").finally(() => process.exit(0)); });
   process.once("SIGTERM", () => { void shutdown("SIGTERM").finally(() => process.exit(0)); });
-  process.once("beforeExit", () => { void shutdown("stdin closed"); });
+  process.stdin.once("end", () => { void shutdown("stdin closed"); });
   transport.onerror = (error) => process.stderr.write(`MCP transport error: ${error.message}\n`);
   transport.onclose = () => { void shutdown("transport closed"); };
   await built.server.connect(transport);

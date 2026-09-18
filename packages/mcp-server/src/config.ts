@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { readJson, writeJsonAtomic } from "./persistence.js";
 
@@ -30,7 +30,7 @@ export async function resolveOptions(
   platform: NodeJS.Platform = process.platform,
 ): Promise<CliOptions> {
   let command: "serve" | "configure" = "serve";
-  let dataDir = resolve(env.REPLAY_MCP_DATA_DIR ?? ".replay-mcp-sidecar");
+  let dataDir = resolve(env.REPLAY_MCP_DATA_DIR ?? defaultDataDir(platform, env));
   const explicit: string[] = [];
   let discoveryIntervalMs = 2_000;
   for (let index = 0; index < argv.length; index++) {
@@ -63,6 +63,15 @@ export async function resolveOptions(
   };
 }
 
+export function defaultDataDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
+  const home = env.HOME ?? env.USERPROFILE ?? homedir();
+  if (platform === "win32") {
+    return join(env.LOCALAPPDATA ?? env.APPDATA ?? join(home, "AppData", "Local"), "Replay MCP");
+  }
+  if (platform === "darwin") return join(home, "Library", "Application Support", "Replay MCP");
+  return join(env.XDG_DATA_HOME ?? join(home, ".local", "share"), "replay-mcp");
+}
+
 export async function persistGameDirs(dataDir: string, gameDirs: string[]): Promise<void> {
   await writeJsonAtomic(resolve(dataDir, "config.json"), {
     storage_version: 1,
@@ -80,7 +89,7 @@ export function conventionalGameDirs(platform: NodeJS.Platform, env: NodeJS.Proc
 }
 
 export const HELP = `Usage: replay-mcp-server [configure] [options]\n\n` +
-  `  --data-dir <path>              Persistent sidecar data directory\n` +
+  `  --data-dir <path>              Persistent sidecar data directory (defaults to the platform user-data directory)\n` +
   `  --game-dir <path>              Minecraft game directory (repeatable)\n` +
   `  --discovery-interval-ms <ms>   Rescan interval (minimum 250)\n` +
   `\nDevelopment environment: ${DEVELOPMENT_GAME_DIR_ENV}`;

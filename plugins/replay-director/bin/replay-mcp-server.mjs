@@ -37603,7 +37603,7 @@ var StdioServerTransport = class {
 
 // src/config.ts
 import { homedir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { delimiter, join as join2, resolve } from "node:path";
 import { mkdir as mkdir2 } from "node:fs/promises";
 
 // src/persistence.ts
@@ -37679,7 +37679,7 @@ function valueAfter(args, index, option) {
 }
 async function resolveOptions(argv, env = process.env, platform = process.platform) {
   let command = "serve";
-  let dataDir = resolve(env.REPLAY_MCP_DATA_DIR ?? ".replay-mcp-sidecar");
+  let dataDir = resolve(env.REPLAY_MCP_DATA_DIR ?? defaultDataDir(platform, env));
   const explicit = [];
   let discoveryIntervalMs = 2e3;
   for (let index = 0; index < argv.length; index++) {
@@ -37707,6 +37707,14 @@ async function resolveOptions(argv, env = process.env, platform = process.platfo
     command
   };
 }
+function defaultDataDir(platform, env) {
+  const home = env.HOME ?? env.USERPROFILE ?? homedir();
+  if (platform === "win32") {
+    return join2(env.LOCALAPPDATA ?? env.APPDATA ?? join2(home, "AppData", "Local"), "Replay MCP");
+  }
+  if (platform === "darwin") return join2(home, "Library", "Application Support", "Replay MCP");
+  return join2(env.XDG_DATA_HOME ?? join2(home, ".local", "share"), "replay-mcp");
+}
 async function persistGameDirs(dataDir, gameDirs) {
   await writeJsonAtomic(resolve(dataDir, "config.json"), {
     storage_version: 1,
@@ -37723,7 +37731,7 @@ function conventionalGameDirs(platform, env) {
 }
 var HELP = `Usage: replay-mcp-server [configure] [options]
 
-  --data-dir <path>              Persistent sidecar data directory
+  --data-dir <path>              Persistent sidecar data directory (defaults to the platform user-data directory)
   --game-dir <path>              Minecraft game directory (repeatable)
   --discovery-interval-ms <ms>   Rescan interval (minimum 250)
 
@@ -37731,14 +37739,14 @@ Development environment: ${DEVELOPMENT_GAME_DIR_ENV}`;
 
 // src/resources/register.ts
 import { access, readFile as readFile4 } from "node:fs/promises";
-import { dirname as dirname2, join as join5, resolve as resolve4 } from "node:path";
+import { dirname as dirname2, join as join6, resolve as resolve4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/artifacts/store.ts
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir as mkdir3, readFile as readFile3, realpath as realpath2 } from "node:fs/promises";
-import { basename, join as join3, resolve as resolve3, sep } from "node:path";
+import { basename, join as join4, resolve as resolve3, sep } from "node:path";
 
 // src/types.ts
 var BRIDGE_PROTOCOL = "replay-mcp.bridge/1";
@@ -37845,7 +37853,7 @@ function asObject(value, label = "bridge result") {
 
 // src/bridge/discovery.ts
 import { readFile as readFile2, readdir, realpath } from "node:fs/promises";
-import { join as join2, resolve as resolve2 } from "node:path";
+import { join as join3, resolve as resolve2 } from "node:path";
 
 // src/bridge/client.ts
 import { EventEmitter } from "node:events";
@@ -38077,8 +38085,8 @@ var DiscoveryManager = class {
           if (this.clients.get(descriptor.instanceId)?.connected) continue;
           try {
             if (!pidExists(descriptor.processId)) continue;
-            const instanceDir = join2(gameDir, ".replay-mcp", "instances", descriptor.instanceId);
-            const token = (await readFile2(join2(instanceDir, "token"), "ascii")).trim();
+            const instanceDir = join3(gameDir, ".replay-mcp", "instances", descriptor.instanceId);
+            const token = (await readFile2(join3(instanceDir, "token"), "ascii")).trim();
             const client = await BridgeClient.connect(descriptor, token);
             client.once("disconnect", () => {
               if (this.clients.get(descriptor.instanceId) === client) this.clients.delete(descriptor.instanceId);
@@ -38131,7 +38139,7 @@ var SidecarError = class extends Error {
   }
 };
 async function scanDescriptors(gameDir) {
-  const root = join2(gameDir, ".replay-mcp", "instances");
+  const root = join3(gameDir, ".replay-mcp", "instances");
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -38143,7 +38151,7 @@ async function scanDescriptors(gameDir) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     try {
-      const path = join2(root, entry.name, "bridge.json");
+      const path = join3(root, entry.name, "bridge.json");
       const descriptor = InstanceDescriptorSchema.parse(JSON.parse(await readFile2(path, "utf8")));
       const declared = await canonicalOrResolved(descriptor.gameDirectory);
       const configured = await canonicalOrResolved(gameDir);
@@ -38178,7 +38186,7 @@ var ArtifactStore = class {
   constructor(dataDir, maxInlineBytes = 20 * 1024 * 1024) {
     this.#records = new JsonCollection(dataDir, "artifacts/index.json");
     this.#maxInlineBytes = maxInlineBytes;
-    this.localRoot = join3(dataDir, "artifacts", "files");
+    this.localRoot = join4(dataDir, "artifacts", "files");
   }
   async load() {
     await mkdir3(this.localRoot, { recursive: true });
@@ -38522,7 +38530,7 @@ function deadlineFrom(params) {
 }
 
 // src/projects/store.ts
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 var ProjectStore = class {
   #projects;
@@ -38621,7 +38629,7 @@ var ProjectStore = class {
       })),
       validation
     };
-    const path = join4(this.#artifacts.localRoot, "handoffs", `${project.id}-r${project.revision}.json`);
+    const path = join5(this.#artifacts.localRoot, "handoffs", `${project.id}-r${project.revision}.json`);
     await writeJsonAtomic(path, manifest);
     const sha256 = createHash2("sha256").update(`${JSON.stringify(manifest, null, 2)}
 `).digest("hex");
@@ -38824,7 +38832,7 @@ function registerResources(server, runtime) {
     mimeType: "application/schema+json"
   }, async (uri, variables) => {
     const name = safeName(String(variables.name));
-    const path = join5(await schemaRoot(), name.endsWith(".json") ? name : `${name}.schema.json`);
+    const path = join6(await schemaRoot(), name.endsWith(".json") ? name : `${name}.schema.json`);
     return { contents: [{ uri: uri.href, mimeType: "application/schema+json", text: await readFile4(path, "utf8") }] };
   });
   server.registerResource("artifact", new ResourceTemplate("replay-mcp://artifact/{id}", { list: void 0 }), {
@@ -38898,7 +38906,7 @@ async function schemaRoot() {
 
 // src/tools/register.ts
 import { mkdir as mkdir4, readFile as readFile5, writeFile as writeFile2 } from "node:fs/promises";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 var instance = { instance_id: external_exports.uuid().optional().describe("Target instance; omit only when exactly one instance is live") };
 var loose = external_exports.object(instance).catchall(external_exports.unknown());
 var requestId = external_exports.string().min(1).max(128).optional();
@@ -39474,7 +39482,7 @@ async function buildContactSheet(runtime, frames, name) {
   }));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${columns * cellWidth}" height="${rows * cellHeight}" viewBox="0 0 ${columns * cellWidth} ${rows * cellHeight}"><rect width="100%" height="100%" fill="black"/>${images.join("")}</svg>`;
   await mkdir4(runtime.artifacts.localRoot, { recursive: true });
-  const path = join6(runtime.artifacts.localRoot, `${name}.svg`);
+  const path = join7(runtime.artifacts.localRoot, `${name}.svg`);
   await writeFile2(path, svg, "utf8");
   return await runtime.artifacts.registerLocal(path, "image/svg+xml", { provenance: { source_frame_ids: frames.map((item) => item.id) } });
 }
@@ -39631,7 +39639,7 @@ async function main() {
   process.once("SIGTERM", () => {
     void shutdown("SIGTERM").finally(() => process.exit(0));
   });
-  process.once("beforeExit", () => {
+  process.stdin.once("end", () => {
     void shutdown("stdin closed");
   });
   transport.onerror = (error62) => process.stderr.write(`MCP transport error: ${error62.message}

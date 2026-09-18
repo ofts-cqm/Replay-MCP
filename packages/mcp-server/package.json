@@ -23,6 +23,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-protocol.mjs",
     "bundle:plugin": "node scripts/bundle-plugin.mjs",
+    "smoke:plugin": "node scripts/smoke-plugin.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
