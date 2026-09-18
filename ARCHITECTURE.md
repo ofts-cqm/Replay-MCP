@@ -1081,3 +1081,337 @@ Potential later extensions:
 - editor-specific certified integration packs; and
 - remote machines through an explicit, separately secured relay rather than
   exposing the in-game bridge.
+
+## 13. Sidecar implementation, repository layout, and distribution
+
+### 13.1 Implementation decision
+
+Implement the local MCP sidecar in TypeScript on Node.js 20 or later and
+publish it as an npm package.
+
+Use:
+
+- ESM TypeScript;
+- the current v2 `@modelcontextprotocol/server` package;
+- `serveStdio(() => buildServer())` from
+  `@modelcontextprotocol/server/stdio` so each connection receives its own
+  server instance and the SDK can negotiate supported MCP protocol eras;
+- Zod v4 for tool inputs, structured outputs, bridge messages, and persisted
+  sidecar data;
+- `ws` for the private authenticated WebSocket connection to Minecraft,
+  because the bridge token is sent in an HTTP header; and
+- npm workspaces and the root `package-lock.json` for reproducible development.
+
+Do not begin new code on the v1 monolithic `@modelcontextprotocol/sdk` package.
+Some OpenAI examples still show that import, but the current upstream
+TypeScript SDK publishes the server API as `@modelcontextprotocol/server`.
+
+Why Node/TypeScript fits this sidecar:
+
+- the official MCP TypeScript SDK directly supports stdio servers;
+- the mod protocol is JSON over WebSocket;
+- Zod can define the public MCP schemas and validate the untrusted boundary
+  between the sidecar and game;
+- npm supplies a straightforward executable package for Codex and other local
+  MCP clients; and
+- the server contains orchestration, validation, persistence, and file
+  handling rather than latency-sensitive rendering code.
+
+The sidecar should not expose Streamable HTTP in the initial release. It is a
+same-machine companion to a local Minecraft process, so MCP-over-stdio is the
+smallest and safest public transport. The sidecar-to-mod WebSocket remains
+private implementation plumbing and is not itself an MCP endpoint.
+
+### 13.2 Repository layout
+
+Keep the implemented Fabric project at the repository root. Moving the Gradle
+files and Java sources now would add risk without improving the product
+boundary.
+
+```text
+Replay MCP/
+├── build.gradle                         # existing Fabric mod build
+├── gradle.properties
+├── settings.gradle
+├── src/                                 # existing Fabric integration mod
+│   ├── main/
+│   ├── client/
+│   └── test/
+├── protocol/                            # language-neutral bridge contract
+│   └── bridge-v1/
+│       ├── README.md
+│       ├── schemas/
+│       └── fixtures/
+├── packages/
+│   └── mcp-server/                      # publishable TypeScript sidecar
+│       ├── package.json
+│       ├── tsconfig.json
+│       ├── src/
+│       │   ├── cli.ts
+│       │   ├── server.ts
+│       │   ├── config/
+│       │   ├── bridge/
+│       │   ├── tools/
+│       │   ├── resources/
+│       │   ├── lease/
+│       │   ├── artifacts/
+│       │   ├── jobs/
+│       │   └── projects/
+│       └── test/
+├── plugins/
+│   └── replay-director/                 # installable Agent/Codex plugin
+│       ├── plugin.json
+│       ├── mcp.json
+│       ├── skills/
+│       ├── assets/
+│       └── bin/                         # generated release bundle
+├── tools/                               # existing smoke/developer utilities
+├── package.json                         # private npm workspace root
+├── package-lock.json
+└── ARCHITECTURE.md
+```
+
+The root npm package is private and is never published. Only
+`packages/mcp-server` is an npm package. `plugins/replay-director` is a plugin
+distribution, not an npm workspace package.
+
+The `protocol/bridge-v1` schemas and fixtures become the language-neutral
+contract between the implemented Java bridge and the TypeScript sidecar. The
+existing Java validators do not need to be replaced by generated code, but
+both Java and TypeScript contract tests must accept the same valid fixtures and
+reject the same invalid fixtures. Bridge protocol changes require a new
+versioned directory or an explicitly backward-compatible schema change.
+
+### 13.3 Sidecar modules
+
+#### Process entry points
+
+- `cli.ts` parses command-line/configuration options, configures stderr-only
+  logging, installs shutdown handlers, and starts stdio MCP serving.
+- `server.ts` creates one `McpServer`, declares concise shared instructions,
+  and registers all tools and resources.
+- Standard output is reserved exclusively for MCP messages. Diagnostics,
+  bridge logs, and stack traces go to standard error or a rotating log file.
+
+The npm package exposes a `replay-mcp-server` executable through its `bin`
+field. It should also export `buildServer` for tests, without exposing raw
+bridge internals as public API.
+
+#### Configuration and discovery
+
+The sidecar resolves Minecraft game directories in this order:
+
+1. repeatable `--game-dir` command-line values;
+2. an explicit environment variable intended for development;
+3. the sidecar config beneath its supplied data directory; and
+4. conservative conventional launcher paths, reported as guesses rather than
+   silently trusted.
+
+Custom launcher locations need a one-time `replay-mcp-server configure
+--game-dir <path>` operation. When launched from the plugin, the writable
+`${PLUGIN_DATA}` directory is passed as the sidecar data directory. Bridge
+tokens remain in the mod's protected discovery directories and are never
+copied into `plugin.json`, `mcp.json`, environment literals, or project files.
+
+The discovery module:
+
+- scans `.replay-mcp/instances/*/bridge.json` under configured game roots;
+- validates descriptor schemas;
+- rejects stale/nonexistent process IDs;
+- reads the protected sibling token;
+- connects only to the descriptor's loopback port;
+- performs authenticated `system.hello`; and
+- verifies instance ID, process ID, and bridge protocol before registering the
+  instance as usable.
+
+The MCP process should remain running when Minecraft is offline. `system_status`
+then returns a useful offline state and the searched game directories rather
+than terminating the server.
+
+#### Bridge client
+
+Maintain one WebSocket client object per connected Minecraft instance. It owns:
+
+- monotonically unique JSON-RPC request IDs;
+- pending-response correlation and deadlines;
+- notification/event dispatch;
+- cancellation;
+- reconnect and rediscovery after a game restart;
+- negotiated capabilities; and
+- a strict state transition from authenticated WebSocket to completed
+  `system.hello` before other RPCs are sent.
+
+A disconnect fails pending calls promptly. It must not silently reacquire the
+director lease after reconnecting; a new `control_acquire` is required.
+
+#### Lease controller
+
+The sidecar stores the current lease ID and fencing epoch inside the MCP
+connection's session state and injects them into all mutating bridge calls. The
+model does not need to repeat lease credentials in every public tool call.
+
+After `control_acquire`, the controller sends `lease.heartbeat` at the interval
+advertised by the bridge. `active` is true only while an operation is executing
+or within the configured recent-activity window. On stdio shutdown,
+`control_release`, signal handling, or bridge failure, it cancels active work
+and makes a best-effort release. The mod remains the authoritative lease owner
+and fencing authority.
+
+The implemented bridge should expose its lease TTL, expected heartbeat
+interval, and idle ceiling in `system.hello` or `system.status`. If those fields
+are not yet present, add them before treating heartbeat timing as a stable
+sidecar contract; do not permanently duplicate the Java defaults in TypeScript.
+
+#### Tool adapters
+
+Implement one typed handler per public MCP tool. Do not expose a public
+`bridge_call` escape hatch.
+
+Handlers are responsible for:
+
+- selecting or validating the target Minecraft instance;
+- checking negotiated capabilities and runtime mode;
+- translating public names and units to bridge methods;
+- adding request IDs, deadlines, and current lease fencing data;
+- translating bridge errors into stable MCP error results;
+- returning both `structuredContent` and concise model-readable text;
+- attaching accurate read-only, destructive, and open-world annotations; and
+- never claiming success merely because a bridge request was accepted.
+
+`game_observe` is a composed sidecar tool: request a framebuffer artifact and a
+structured snapshot, verify the artifact metadata/checksum/path, and return the
+image as MCP image content alongside the synchronized structured state.
+
+For artifact-returning tools, the sidecar must canonicalize the returned path,
+confirm that it lies under an authenticated instance's allowed roots, verify
+the stated size and SHA-256 digest, and only then read it. Replays and videos
+remain MCP resources or metadata-first artifacts; they are not placed inline
+in ordinary tool results.
+
+#### Sidecar-owned state
+
+The following live in the sidecar's data directory rather than the Minecraft
+process:
+
+- production project manifests and revisions;
+- editor handoff manifests;
+- persistent job summaries and logs;
+- artifact indexes and provenance; and
+- configured Minecraft game-directory roots.
+
+Use atomic write-then-rename persistence and version every stored document.
+Project mutations use optimistic revisions. An interrupted write must leave
+the previous valid revision readable.
+
+### 13.4 npm package and release strategy
+
+Use a scoped package name when a stable npm organization or user scope is
+chosen, for example `<npm-scope>/replay-mcp-server`. Do not assume that this
+placeholder name is available until it is reserved.
+
+The published package should contain only compiled `dist/`, `package.json`,
+README, license, and required schemas/assets. It should declare:
+
+- `type: "module"`;
+- `engines.node: ">=20"`;
+- an executable `bin` entry named `replay-mcp-server`; and
+- explicit `files` so tests, source-only fixtures, Gradle output, and Minecraft
+  recordings cannot enter the npm tarball.
+
+Before publication, CI should run unit, schema, bridge-contract, MCP protocol,
+and package-install smoke tests, followed by `npm pack --dry-run`. Publish with
+provenance and immutable versions where the release environment supports it.
+
+Publishing to npm is useful for users of Codex, Claude, Cursor, or another
+local MCP client. It is not the only copy used by the Codex plugin:
+
+- direct/manual installations can run an exact npm version with `npx` or a
+  normal package installation;
+- released plugin archives should contain the exact tested JavaScript bundle
+  under `plugins/replay-director/bin/`; and
+- the plugin must not run an unpinned `npx ...@latest` on every launch.
+
+Bundling the tested JavaScript artifact makes plugin startup deterministic and
+offline-capable after installation. The initial plugin still requires a
+`node` executable satisfying the declared engine. Platform-native standalone
+executables can be considered later if removing that prerequisite becomes
+important.
+
+Keep four versions distinct:
+
+1. Fabric mod version;
+2. `replay-mcp.bridge/N` protocol version;
+3. npm sidecar semantic version; and
+4. plugin semantic version.
+
+A product release records a tested compatibility matrix rather than requiring
+all four version numbers to remain identical.
+
+### 13.5 Codex/Agent plugin package
+
+Author a portable plugin at `plugins/replay-director`, with root `plugin.json`,
+root `mcp.json`, `skills/`, and `assets/`. Add a
+`.codex-plugin/plugin.json` compatibility fallback only when a target Codex
+surface used during testing still requires it; do not make the legacy layout
+the canonical source.
+
+The release `mcp.json` should launch the bundled sidecar over stdio,
+conceptually:
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "replay-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/bin/replay-mcp-server.mjs",
+        "--data-dir",
+        "${PLUGIN_DATA}"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}
+```
+
+`plugins/replay-director/bin` is generated by the release build from
+`packages/mcp-server`; it is not a second source tree. A local marketplace test
+must run the bundle step before installing/copying the plugin, because Codex
+loads the installed plugin copy rather than the workspace source directory.
+
+The plugin and npm package are separate distribution products:
+
+- npm distributes the reusable local MCP server;
+- the plugin directory distributes skills, presentation metadata, and a pinned
+  tested server bundle; and
+- the Fabric JAR is distributed through the normal Minecraft-mod release
+  channel and is never embedded into the npm package.
+
+### 13.6 Implementation order
+
+1. Write bridge-v1 schemas and golden fixtures from the implemented Java
+   protocol, then run them against Java contract tests.
+2. Create the private root npm workspace and `packages/mcp-server` skeleton.
+3. Implement discovery, authenticated WebSocket hello, status, error mapping,
+   reconnect, and logging.
+4. Implement the director-lease controller and test two sidecars against one
+   fake and one real mod instance.
+5. Implement read-only MCP tools, beginning with `system_status`,
+   `game_query`, and `game_observe`.
+6. Implement `game_perform` and recording tools, including cancellation and
+   idempotency tests.
+7. Implement replay/timeline/render tools and asynchronous job events.
+8. Implement sidecar-owned project, artifact-index, and handoff persistence.
+9. Add MCP Inspector tests, package-install tests, and a real Minecraft
+   end-to-end smoke suite.
+10. Build `plugins/replay-director`, then add artistic and editor-specific
+    skills only after the underlying tool behavior is verified.
+
+### 13.7 Current implementation references
+
+- [OpenAI Docs: Build an MCP server](https://developers.openai.com/plugins/build/mcp-server)
+- [OpenAI Docs: Package your plugin](https://developers.openai.com/plugins/build/plugins)
+- [MCP TypeScript SDK server package](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/packages/server)
+- [Agent Plugins MCP server configuration](https://agent-plugins.org/plugin-authors/mcp-servers)
