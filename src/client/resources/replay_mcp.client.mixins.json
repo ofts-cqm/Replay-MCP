@@ -4,6 +4,13 @@
   "package": "net.ofts.replay_mcp.mixin.client",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "KeyboardHandlerMixin",
+    "MouseHandlerMixin",
+    "PacketListenerAccessor",
+    "ScreenInvoker",
+    "GuiCaptureMixin",
+    "MinecraftFrameMixin",
+    "ChatComponentAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -1,6 +1,26 @@
 # Replay MCP Architecture and Interface Scope
 
-Status: draft for scoping; no implementation contract yet.
+Status: the Minecraft-side Fabric submod and private bridge are implemented.
+The Replay MCP sidecar, public MCP server, production project store, Codex
+plugin/workflows, and editor integrations are not yet implemented. End-to-end
+workflow acceptance testing is intentionally deferred until the Codex-facing
+workflows are complete.
+
+Implementation status in this document describes code coverage, not completed
+workflow validation. Unit checks, builds, and direct bridge smoke checks may be
+used during development, but the full testing pass remains pending.
+
+| Scope | Status |
+| --- | --- |
+| Fabric submod service graph and local human controls | **Implemented** |
+| Authenticated mod-to-sidecar bridge and discovery | **Implemented (mod/server side)** |
+| Minecraft observation and normal-input action primitives | **Implemented (mod side)** |
+| Replay Mod recording, replay, timeline, and render adapters | **Implemented (mod side)** |
+| Public MCP tools, resources, jobs, and bridge client | **Pending: sidecar** |
+| Production manifests and editor-neutral handoff | **Pending: sidecar** |
+| Codex plugin and filmmaking workflows | **Pending** |
+| Optional editor MCP profiles/integrations | **Pending / optional** |
+| Complete end-to-end workflow acceptance testing | **Deferred until Codex workflows are complete** |
 
 Replay MCP is a client-side Fabric submod for Replay Mod plus a local MCP
 server and a Codex plugin. Together they let an AI agent:
@@ -140,7 +160,11 @@ The sidecar may be implemented in any suitable language. The protocol between
 the sidecar and mod is the stable boundary; implementation language is not part
 of the public contract.
 
-## 3. Runtime modes and state transitions
+## 3. Runtime modes and state transitions — Implemented (Minecraft side)
+
+**Implementation status:** Runtime mode is derived from the active Minecraft
+and Replay Mod state in the Fabric submod. Sidecar job/session projection of
+those modes remains pending.
 
 ```mermaid
 stateDiagram-v2
@@ -174,6 +198,12 @@ Rules:
   It does not automatically discard a replay or terminate a healthy render.
 
 ## 4. Public MCP tool surface
+
+**Implementation status:** Pending in the sidecar. The Minecraft-backed
+primitives required by sections 4.2 through 4.7 are implemented in the Fabric
+submod and exposed through the private bridge, but these public MCP tool names,
+schemas, resource conversion, job orchestration, and project-level composition
+still belong to the sidecar/Codex phase.
 
 The following is the proposed complete public surface. Names are intentionally
 domain-prefixed so tool discovery remains understandable when an editor MCP is
@@ -589,7 +619,7 @@ Renders a high-quality still at an exact timeline time for framing, thumbnail,
 or final-quality review. This differs from `replay_observe`, which is optimized
 for fast interactive inspection.
 
-### 4.8 Production project and editor handoff
+### 4.8 Production project and editor handoff — Pending (sidecar)
 
 The sidecar maintains a small editor-neutral production model:
 
@@ -641,7 +671,11 @@ The initial format is versioned Replay MCP JSON. Optional OTIO, EDL, FCP XML,
 or editor-native translators can be added later without changing the core
 project model.
 
-## 5. MCP resources
+## 5. MCP resources — Pending (sidecar)
+
+The mod already stages large outputs atomically and returns bounded artifact
+metadata, canonical paths, MIME types, dimensions, sizes, and checksums. MCP
+resource registration and serving remain sidecar responsibilities.
 
 Tools mutate state or run bounded queries. Larger immutable/read-only content
 is exposed as MCP resources:
@@ -658,7 +692,14 @@ is exposed as MCP resources:
 Media resources should support metadata-first inspection so the model does not
 accidentally load a full video when a thumbnail or manifest is sufficient.
 
-## 6. Mod-to-sidecar bridge interface
+## 6. Mod-to-sidecar bridge interface — Implemented (mod/server side)
+
+**Implementation status:** The authenticated loopback WebSocket server,
+versioned JSON-RPC protocol, discovery publication, token authentication,
+capability/status negotiation, request correlation, idempotency, deadlines,
+cancellation, events, artifact descriptors, and lease enforcement are
+implemented in the Fabric submod. The sidecar bridge client and its mapping to
+public MCP tools remain pending.
 
 This is an internal, versioned, authenticated protocol. It is not exposed to
 the network and is not a second public automation API.
@@ -826,7 +867,13 @@ Game and render-thread operations are queued onto the correct Minecraft thread.
 Framebuffer copying occurs on the render thread; compression and artifact I/O
 occur off-thread.
 
-## 7. Fabric submod internal interfaces
+## 7. Fabric submod internal interfaces — Implemented
+
+**Implementation status:** These responsibilities are implemented in the
+Fabric submod service graph. Some responsibilities are consolidated into
+shared adapters rather than represented by one Java class per row. Optional
+tracks that Replay Mod cannot represent natively are reported as unavailable
+and remain sidecar-owned as designed.
 
 These are architectural responsibilities rather than promises about Java class
 names.
@@ -853,7 +900,7 @@ Where Replay Mod lacks a native representation for an optional track or piece
 of metadata, Replay MCP stores it in versioned sidecar data and makes that fact
 visible through capability and provenance fields.
 
-## 8. Codex plugin package
+## 8. Codex plugin package — Pending
 
 ```text
 replay-director-plugin/
@@ -886,7 +933,7 @@ review criteria, and recovery procedures rather than reimplementing tools.
 The core plugin registers only Replay MCP. An editor profile supplies guidance
 and optional configuration for a separately installed editor MCP.
 
-## 9. Optional post-production MCP contract
+## 9. Optional post-production MCP contract — Pending / optional
 
 Replay MCP does not proxy, vendor, or pretend to implement an editor MCP. The
 Codex agent coordinates the two sibling MCPs.
@@ -921,7 +968,13 @@ bundled by default; users install it separately. If a future distribution does
 vendor an MCP, that requires a pinned version, security review, license review,
 required notices, and review of transitive dependencies.
 
-## 10. Security and human control
+## 10. Security and human control — Implemented (Minecraft side)
+
+**Implementation status:** Local authentication, exclusive fenced control,
+physical-input revocation, F10 controls, F12 emergency stop, input release,
+command opt-in, path confinement, artifact hashing, configuration protection,
+and append-only auditing are implemented in the mod. Sidecar-side project-root
+validation and public MCP session policy remain pending with the sidecar.
 
 - The bridge is local and authenticated.
 - The mod grants at most one exclusive director lease per Minecraft instance;
@@ -940,7 +993,11 @@ required notices, and review of transitive dependencies.
 - Screenshots may expose chat, player names, or server information. Observation
   options include HUD hiding and configured redaction for persisted artifacts.
 
-## 11. End-to-end workflow
+## 11. End-to-end workflow — Pending Codex/sidecar implementation and testing
+
+The Minecraft-side calls shown below have bridge implementations. The complete
+workflow is not marked implemented or tested until the sidecar, public MCP
+surface, production model, and Codex workflows can drive it end to end.
 
 ```mermaid
 sequenceDiagram
@@ -989,6 +1046,10 @@ sequenceDiagram
 ```
 
 ## 12. Scope boundaries
+
+**Implementation status:** The Minecraft-side portions of the included scope
+are implemented. Project/provenance manifests, editor handoff, Codex skills,
+and complete workflow testing remain pending as identified above.
 
 Included:
 

@@ -22,7 +22,11 @@ loom {
 }
 
 repositories {
-    maven { url "https://api.modrinth.com/maven" } // Example for Modrinth
+    maven {
+        name = "Modrinth"
+        url = "https://api.modrinth.com/maven"
+        content { includeGroup "maven.modrinth" }
+    }
 }
 
 dependencies {
@@ -32,7 +36,15 @@ dependencies {
 
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
-    implementation "maven.modrinth:replaymod:${replaymod_version}"
+    implementation "maven.modrinth:replaymod:${project.replaymod_version}"
+
+    testImplementation platform("org.junit:junit-bom:5.14.2")
+    testImplementation "org.junit.jupiter:junit-jupiter"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+    useJUnitPlatform()
 }
 
 processResources {
@@ -72,7 +84,7 @@ java {
 }
 
 jar {
-    from("LICENSE") {
+    from("LICENSE.txt") {
         rename { "${it}_${project.archives_base_name}" }
     }
 }
