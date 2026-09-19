@@ -37,8 +37,8 @@ describe("in-process MCP filmmaking workflow", () => {
     await client.connect(pair[0]);
 
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(38);
-    expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(38);
+    expect(tools.tools).toHaveLength(39);
+    expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(39);
 
     const online = structured(await call(client, "system_status", {}));
     expect(online.state).toBe("online");
@@ -47,6 +47,27 @@ describe("in-process MCP filmmaking workflow", () => {
     expect(((onlineInstance!.capabilities as Record<string, unknown>).navigation as Record<string, unknown>)).toMatchObject({ ground: true, engine: "minecraft_walk_node_evaluator", max_distance: 128 });
     const invalidNavigation = await client.callTool({ name: "game_perform", arguments: { actions: [{ kind: "navigate_to", x: 1, y: 64 }] } });
     expect(invalidNavigation.isError).toBe(true);
+
+    const playerProject = structured(await call(client, "project_create", { title: "Player Capture", frame_rate: 30, resolution: { width: 1920, height: 1080 }, output_root: "renders" })).project as Record<string, unknown>;
+    const playerSceneProject = structured(await call(client, "project_apply", {
+      project_id: playerProject.id, base_revision: playerProject.revision,
+      operations: [{ op: "upsert_scene", scene: { id: "player-scene", takes: [] } }],
+    })).project as Record<string, unknown>;
+    const replayList = (structured(await call(client, "replay_list", {})).result as Record<string, unknown>[]);
+    const importedPlayer = structured(await call(client, "project_import_replay", {
+      project_id: playerProject.id, base_revision: playerSceneProject.revision, scene_id: "player-scene", path: replayList[0]!.path,
+    }));
+    expect(importedPlayer).toMatchObject({ changed: true, accepted_count: 1, diagnostic_count: 2 });
+    const capturedTake = importedPlayer.captured_take as Record<string, unknown>;
+    expect(capturedTake).toMatchObject({ format: "replay-mcp.captured-take/1", provenance: "player" });
+    expect(capturedTake.accepted_clips).toHaveLength(1);
+    expect(capturedTake.shots).toHaveLength(1);
+    const importedRevision = (importedPlayer.project as Record<string, unknown>).revision;
+    expect(structured(await call(client, "project_import_replay", {
+      project_id: playerProject.id, base_revision: importedRevision, scene_id: "player-scene", path: replayList[0]!.path,
+    }))).toMatchObject({ changed: false, accepted_count: 1 });
+    expect(fake.calls.some((entry) => entry.method === "lease.acquire")).toBe(false);
+
     expect(structured(await call(client, "control_acquire", {})).lease_id).toBeTypeOf("string");
     const observation = await call(client, "game_observe", { view: "annotated" });
     expect(observation.content.some((block) => block.type === "image")).toBe(true);

@@ -9,6 +9,7 @@ import com.replaymod.recording.ReplayModRecording;
 import com.replaymod.replay.ReplayModReplay;
 import com.replaymod.replaystudio.replay.ReplayFile;
 import com.replaymod.replaystudio.replay.ReplayMetaData;
+import com.replaymod.replaystudio.data.Marker;
 import com.replaymod.simplepathing.ReplayModSimplePathing;
 import com.replaymod.simplepathing.SPTimeline;
 import com.replaymod.pathing.properties.SpectatorProperty;
@@ -35,6 +36,8 @@ import net.minecraft.client.input.KeyEvent;
 import net.ofts.replay_mcp.bridge.BridgeAdapter;
 import net.ofts.replay_mcp.bridge.EventSink;
 import net.ofts.replay_mcp.artifact.ArtifactStore;
+import net.ofts.replay_mcp.capture.ClipMarker;
+import net.ofts.replay_mcp.capture.LocalClipStateMachine;
 import net.ofts.replay_mcp.observation.StableObservationIds;
 import net.ofts.replay_mcp.operation.CancellationToken;
 import net.ofts.replay_mcp.mixin.client.PacketListenerAccessor;
@@ -69,6 +72,8 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private Object observedScreen;
     private boolean logicalRecording;
     private String takeId;
+    private String agentClipId;
+    private final LocalClipStateMachine localClips = new LocalClipStateMachine();
     private String pendingTakeId;
     private Path pendingRecordingPath;
     private long pendingRecordingSize = -1;
@@ -92,6 +97,20 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
 
     MinecraftBridgeAdapter(ArtifactStore artifacts, net.ofts.replay_mcp.config.ReplayMcpConfig config) {
         this.artifacts = artifacts; this.config = config;
+    }
+
+    void localClipStart() { localClip(LocalClipAction.START); }
+    void localClipEnd() { localClip(LocalClipAction.END); }
+    void localClipRevoke() { localClip(LocalClipAction.REVOKE); }
+
+    String localClipHudStatus() {
+        if (localClips.isActive()) return "clip ACTIVE " + localClips.activeClipId().substring(0, 8);
+        return switch (localClips.lastTransition().outcome()) {
+            case ACCEPTED -> "clip accepted";
+            case REVOKED -> "clip revoked";
+            case INTERRUPTED -> "clip incomplete";
+            default -> "clip idle";
+        };
     }
 
     @Override public void eventSink(EventSink sink) { events = sink == null ? EventSink.NONE : sink; }
@@ -138,6 +157,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         result.add("families", families);
         result.addProperty("normal_input", true); result.addProperty("structured_observation", true);
         result.addProperty("framebuffer_capture", true); result.addProperty("clean_capture", true); result.addProperty("annotated_capture", true); result.addProperty("native_timeline", true);
+        result.addProperty("player_clip_capture", true); result.addProperty("normalized_replay_markers", true);
         result.addProperty("native_fov", false); result.addProperty("native_look_at", false); result.addProperty("sidecar_editorial_tracks", false);
         JsonObject navigationCapability = new JsonObject();
         navigationCapability.addProperty("ground", true);
@@ -773,6 +793,10 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             if (listener != null) result.addProperty("duration_us", listener.getCurrentDuration() * 1_000L);
             if (takeId != null) result.addProperty("take_id", takeId);
             if (listener != null) result.addProperty("path", ((PacketListenerAccessor) listener).replayMcp$outputPath().toAbsolutePath().normalize().toString());
+            JsonObject playerClip = new JsonObject(); playerClip.addProperty("active", localClips.isActive());
+            if (localClips.activeClipId() != null) playerClip.addProperty("clip_id", localClips.activeClipId());
+            playerClip.addProperty("last_outcome", localClips.lastTransition().outcome().name().toLowerCase(java.util.Locale.ROOT));
+            playerClip.addProperty("message", localClips.lastTransition().message()); result.add("player_clip", playerClip);
             result.addProperty("time_precision_us", 1_000); return result;
         });
     }
@@ -783,9 +807,12 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             if (listener == null) throw new BridgeException(BridgeError.RECORDING_NOT_ARMED, "Replay Mod recording was not armed when the connection began; enable recording and reconnect");
             if (logicalRecording) throw new BridgeException(BridgeError.CONFLICT, "a logical take is already active");
             takeId = params.has("take_id") ? params.get("take_id").getAsString() : UUID.randomUUID().toString();
+            agentClipId = UUID.randomUUID().toString();
+            listener.addMarker(new ClipMarker(agentClipId, ClipMarker.Kind.START).markerName());
             listener.addMarker("Replay MCP take start: " + takeId);
             logicalRecording = true;
             JsonObject result = recordingStatus(); result.addProperty("take_id", takeId);
+            result.addProperty("clip_id", agentClipId);
             events.publish("recording.changed", result.deepCopy()); return result;
         });
     }
@@ -795,13 +822,14 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             var listener = recordingListener();
             if (listener == null) throw new BridgeException(BridgeError.RECORDING_NOT_ARMED, "Replay Mod recording is unavailable");
             if (!logicalRecording) throw new BridgeException(BridgeError.CONFLICT, "no logical take is active");
+            listener.addMarker(new ClipMarker(agentClipId, ClipMarker.Kind.END).markerName());
             listener.addMarker("Replay MCP take split: " + takeId);
             logicalRecording = false;
             JsonObject result = recordingStatus(); result.addProperty("status", "pending_finalization");
-            result.addProperty("take_id", takeId); result.addProperty("recoverable", true);
+            result.addProperty("take_id", takeId); result.addProperty("clip_id", agentClipId); result.addProperty("recoverable", true);
             pendingRecordingPath = ((PacketListenerAccessor) listener).replayMcp$outputPath().toAbsolutePath().normalize();
             pendingTakeId = takeId;
-            pendingRecordingSize = -1; pendingRecordingStableTicks = 0; takeId = null;
+            pendingRecordingSize = -1; pendingRecordingStableTicks = 0; takeId = null; agentClipId = null;
             events.publish("recording.changed", result.deepCopy()); return result;
         });
     }
@@ -900,13 +928,60 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
 
     private JsonObject replayMetadata(JsonObject params) {
         Path source = confinedReplay(params.get("path").getAsString(), true);
+        Path activeRecording = onClient(() -> {
+            var listener = recordingListener();
+            return listener == null ? null : ((PacketListenerAccessor) listener).replayMcp$outputPath().toAbsolutePath().normalize();
+        });
+        if (source.equals(activeRecording)) throw new BridgeException(BridgeError.CONFLICT, "replay is still being recorded and is not finalized");
         try (ReplayFile file = ReplayMod.instance.files.open(source)) {
             ReplayMetaData metadata = file.getMetaData(); JsonObject result = new JsonObject();
             result.addProperty("path", source.toString()); result.addProperty("duration_us", metadata.getDuration() * 1_000L);
             result.addProperty("created_at_ms", metadata.getDate()); result.addProperty("server", metadata.getServerName()); result.addProperty("minecraft_version", metadata.getMcVersion());
             result.addProperty("file_format", metadata.getFileFormat()); result.addProperty("file_format_version", metadata.getFileFormatVersion()); result.addProperty("time_precision_us", 1_000);
+            JsonObject descriptor = describeFile(source, "application/x-minecraft-replay", 0, 0, true);
+            result.addProperty("replay_id", descriptor.get("sha256").getAsString());
+            result.addProperty("sha256", descriptor.get("sha256").getAsString()); result.addProperty("size", descriptor.get("size").getAsLong());
+            result.addProperty("finalized", true); result.addProperty("source_immutable", true);
+            JsonArray markers = new JsonArray();
+            var replayMarkers = file.getMarkers();
+            if (replayMarkers.isPresent()) replayMarkers.get().stream()
+                    .sorted(java.util.Comparator.comparingInt(Marker::getTime)
+                            .thenComparing(Marker::getName, java.util.Comparator.nullsFirst(String::compareTo)))
+                    .forEach(marker -> {
+                        String markerName = marker.getName() == null ? "" : marker.getName();
+                        JsonObject value = new JsonObject(); value.addProperty("name", markerName); value.addProperty("time_us", marker.getTime() * 1_000L);
+                        ClipMarker.parse(markerName).ifPresent(parsed -> {
+                            value.addProperty("namespace", "replay_mcp:clip:v1"); value.addProperty("clip_id", parsed.clipId());
+                            value.addProperty("kind", parsed.kind().name().toLowerCase(java.util.Locale.ROOT));
+                        });
+                        markers.add(value);
+                    });
+            result.add("markers", markers);
             return result;
         } catch (IOException e) { throw new BridgeException(BridgeError.INVALID_REQUEST, "cannot read replay metadata"); }
+    }
+
+    private enum LocalClipAction { START, END, REVOKE }
+
+    private void localClip(LocalClipAction action) {
+        onClient(() -> {
+            var listener = recordingListener(); boolean available = listener != null;
+            LocalClipStateMachine.Transition transition = switch (action) {
+                case START -> localClips.start(available, listener == null ? ignored -> { } : listener::addMarker);
+                case END -> localClips.end(available, listener == null ? ignored -> { } : listener::addMarker);
+                case REVOKE -> localClips.revoke(available, listener == null ? ignored -> { } : listener::addMarker);
+            };
+            localClipFeedback(transition); return null;
+        });
+    }
+
+    void tickLocalClips() {
+        if (localClips.isActive() && recordingListener() == null) localClipFeedback(localClips.interrupt());
+    }
+
+    private void localClipFeedback(LocalClipStateMachine.Transition transition) {
+        String suffix = transition.clipId() == null ? "" : " [" + transition.clipId().substring(0, 8) + "]";
+        minecraft.gui.hud.getChat().addClientSystemMessage(net.minecraft.network.chat.Component.literal("Replay MCP: " + transition.message() + suffix));
     }
 
     private JsonObject replayOpen(JsonObject params) {

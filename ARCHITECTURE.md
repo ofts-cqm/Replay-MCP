@@ -1,10 +1,10 @@
 # Replay MCP Architecture and Interface Scope
 
 Status: the Minecraft-side Fabric submod, private bridge, Node sidecar, complete
-36-tool public MCP surface, production project store, and minimal Replay
-Director plugin are implemented. Automated fake-bridge acceptance passes. The
-user-attended graphical Minecraft/Replay Mod/render smoke remains pending, so
-the complete real workflow is not yet marked validated. Optional editor
+39-tool public MCP surface, production project store, player-led capture route,
+and Replay Director plugin are implemented. Automated fake-bridge acceptance
+passes. The user-attended graphical player-capture/Replay Mod/render smoke
+remains pending, so that route is not yet marked live-validated. Optional editor
 integrations remain future work.
 
 Implementation status in this document describes code coverage, not completed
@@ -20,18 +20,26 @@ still pending.
 | Replay Mod recording, replay, timeline, and render adapters | **Implemented** |
 | Public MCP tools, resources, jobs, and bridge client | **Implemented; automated acceptance passed** |
 | Production manifests and editor-neutral handoff | **Implemented; automated acceptance passed** |
-| Codex plugin and filmmaking workflows | **Minimal workflow implemented, validated, and locally installed** |
+| Codex plugin and filmmaking workflows | **Agent-led and player-led workflows implemented; automated acceptance passed** |
+| Player-led clip capture and normalized replay import | **Implemented; automated acceptance passed; live smoke pending** |
 | Optional editor MCP profiles/integrations | **Pending / optional** |
 | Complete end-to-end workflow acceptance testing | **Automated fake bridge passed; live user-attended smoke pending** |
 
 Replay MCP is a client-side Fabric submod for Replay Mod plus a local MCP
-server and a Codex plugin. Together they let an AI agent:
+server and a Codex plugin. The implemented workflow lets an AI agent:
 
 1. observe and operate a live Minecraft client through normal player inputs;
 2. record performances with Replay Mod;
 3. inspect and edit replay timelines and camera paths;
 4. render deterministic Minecraft footage; and
 5. hand rendered footage to an optional third-party video-editor MCP.
+
+The player-led workflow moves live performance back to the player. The
+player marks accepted source ranges with local clip keybinds; a lease-free
+importer then normalizes those ranges into the same take/shot handoff consumed
+by the existing replay-editing, rendering, and post-production workflow. Live
+AI control remains available as an optional capture source rather than a
+requirement of downstream editing.
 
 The current project scaffold targets Minecraft 26.2, Fabric Loader 0.19.5,
 Fabric API 0.160.0+26.2, and Replay Mod 26.2-2.6.27. Those versions describe
@@ -55,6 +63,12 @@ the current development snapshot, not a permanent compatibility promise.
   one agent an exclusive control lease for a Minecraft instance. Read-only
   observers may coexist, but they cannot move the player or mutate replay
   state.
+- **Normalize capture at the replay boundary.** Human and automated
+  performers produce the same versioned `CapturedTake` contract. Replay editing
+  branches on capabilities and content, never on who supplied the live inputs.
+- **Do not lease human performance.** Local clip keybinds operate
+  without an MCP director lease. Importing a finalized replay is also
+  lease-free; opening, editing, and rendering it still require the fenced lease.
 - **Keep post-production replaceable.** Replay MCP exports footage and an
   editor-neutral handoff manifest. Editor-specific MCPs remain optional sibling
   integrations.
@@ -67,6 +81,7 @@ the current development snapshot, not a permanent compatibility promise.
 ```mermaid
 flowchart TB
     Agent["Codex / AI agent"]
+    Player["Player performer"]
 
     subgraph Plugin["Replay Director Codex plugin"]
         Skills["Filmmaking and tool-use skills"]
@@ -80,6 +95,7 @@ flowchart TB
         Jobs["Asynchronous job manager"]
         Projects["Production manifest store"]
         Artifacts["Artifact index"]
+        ReplayImport["Replay and clip importer"]
         BridgeClient["Authenticated loopback bridge client"]
     end
 
@@ -89,6 +105,7 @@ flowchart TB
             DirectorLease["Authoritative director lease"]
             Live["Live-game adapter"]
             Input["Input and interaction controller"]
+            ClipKeys["Local clip marker controller"]
             Observe["Framebuffer and state observer"]
             Record["Replay recording adapter"]
             Replay["Replay playback and timeline adapter"]
@@ -114,6 +131,8 @@ flowchart TB
     end
 
     Agent --> Plugin
+    Player --> Minecraft
+    Player -. "clip start / end / revoke" .-> ClipKeys
     Skills --> MCPServer
     PluginManifest --> MCPServer
     EditorProfiles -. "optional tool guidance" .-> EditorMCP
@@ -122,6 +141,7 @@ flowchart TB
     MCPServer --> Jobs
     MCPServer --> Projects
     MCPServer --> Artifacts
+    MCPServer --> ReplayImport
     MCPServer --> BridgeClient
     BridgeClient <-->|"versioned JSON-RPC over authenticated localhost"| BridgeServer
 
@@ -132,6 +152,7 @@ flowchart TB
     DirectorLease --> Render
     BridgeServer --> Observe
     Live --> Input
+    ClipKeys --> Record
     Record --> ReplayMod
     Replay --> ReplayMod
     Render --> ReplayMod
@@ -140,6 +161,8 @@ flowchart TB
     Overlay --> Minecraft
 
     ReplayMod <--> Replays
+    Replays -. "read marker ranges" .-> ReplayImport
+    ReplayImport --> Projects
     Projects <--> ProjectFiles
     Artifacts <--> Rendered
     Projects --> Handoff
@@ -199,9 +222,30 @@ Rules:
 - Lease loss cancels an active action batch and releases every agent-held input.
   It does not automatically discard a replay or terminate a healthy render.
 
+### Player-led clip selection — Implemented
+
+Player-led clip selection is orthogonal to the runtime modes above. It does not
+grant a director lease, synthesize input, or start and stop Replay Mod's
+connection-scoped recorder. While a live recording is armed, a small local
+state machine tracks at most one candidate clip:
+
+```mermaid
+stateDiagram-v2
+    [*] --> ClipIdle
+    ClipIdle --> ClipActive: clip start
+    ClipActive --> ClipIdle: clip end / accepted pair
+    ClipActive --> ClipIdle: clip revoke / rejected attempt
+    ClipActive --> ClipIdle: disconnect / incomplete attempt
+```
+
+Invalid transitions are rejected locally with HUD, chat, or sound feedback.
+An interrupted start marker never becomes an accepted range without a matching
+end marker. The player may record any number of sequential accepted or revoked
+attempts within one connection-scoped `.mcpr`.
+
 ## 4. Public MCP tool surface
 
-**Implementation status:** All 38 public tools below are registered by the
+**Implementation status:** All 39 public tools below are registered by the
 TypeScript sidecar with Zod inputs, typed error results, structured content,
 tool annotations, instance selection, lease enforcement, artifact conversion,
 persistent jobs, and project composition. The full surface passes the
@@ -500,6 +544,31 @@ fly or walk into place, observe, and mark in.
 
 ### 4.4 Replay recording
 
+#### Local player clip keybinds — Implemented
+
+Three remappable client keybinds let the player identify source material while
+performing without an MCP session or director lease:
+
+| Keybind | Valid state | Result |
+| --- | --- | --- |
+| `clip_start` | Replay Mod recording armed; no active clip | Create a stable clip ID and write its start marker at the current replay time. |
+| `clip_end` | Clip active | Write the matching end marker and expose one accepted source range. |
+| `clip_revoke` | Clip active | Write a matching revoke marker, end the attempt, and expose no accepted range. |
+
+Markers use a private, versioned namespace such as
+`replay_mcp:clip:v1:<clip-id>:start`, `:end`, and `:revoke`. They must not use
+Replay Mod's reserved `_RM_` cut/split marker namespace, because player-led
+capture annotates an immutable source replay rather than rewriting it. A revoke
+marker records an intentional mistake so it is distinguishable from a crash or
+disconnect, but it never supplies an includable end timestamp.
+
+Starting while another clip is active, ending or revoking while idle, and using
+the keys while recording is unavailable are local errors with immediate player
+feedback. The HUD shows whether a clip is active plus the accepted or revoked
+result. Pressing these keys does not weaken physical-input revocation if an
+agent happens to hold the lease; the intended player-led capture phase has no
+agent lease.
+
 #### `recording_status`
 
 Returns whether recording is available and active, the current replay/take ID,
@@ -542,6 +611,11 @@ project associations, compatibility, recoverability, and metadata summaries.
 
 Returns metadata for one replay, including markers, duration, protocol/version
 information, associated takes/shots/renders, and validation warnings.
+
+The implemented response includes normalized embedded marker records with
+replay timestamps in microseconds, plus a stable SHA-256 replay identity. The
+lease-free importer can therefore pair player clip markers without opening the
+replay for playback.
 
 #### `replay_open`
 
@@ -684,6 +758,24 @@ Project
             └── Render -> media artifact + technical metadata
 ```
 
+Both player-led and automated capture converge on a
+versioned `CapturedTake` before replay editing begins:
+
+```text
+CapturedTake
+├── replay ID, immutable path, checksum, duration, and compatibility metadata
+├── project, scene, and take IDs
+├── accepted clips
+│   └── stable clip ID + replay_in_us + replay_out_us + optional handles/notes
+├── revoked, incomplete, and malformed attempts with diagnostics
+└── provenance: player | agent
+```
+
+Action traces, synthetic-input checkpoints, and reproducibility information may
+remain agent-only provenance. They are not required inputs to replay editing.
+The downstream editor consumes accepted source ranges identically regardless of
+performer origin.
+
 #### `project_list`
 
 Lists Replay MCP production projects and their current validation/render state.
@@ -702,6 +794,28 @@ replay/render references, editorial intent, continuity notes, and artifact IDs.
 
 Atomically applies revision-checked operations to scenes, takes, shots,
 ordering, narration/caption notes, music cues, and post-production intent.
+
+#### `project_import_replay` — Implemented
+
+Imports one finalized, path-confined `.mcpr` into a project and normalizes its
+embedded player or agent clip markers into a `CapturedTake`. Inputs identify
+the project revision, scene, replay path or ID, and an optional take ID. The
+operation:
+
+- verifies that the source is finalized and stable, records its checksum, and
+  preserves it as immutable;
+- pairs markers by stable clip ID rather than by adjacency alone;
+- emits accepted ranges only for a valid start/end pair with `end > start`;
+- reports revoked, duplicate, malformed, and incomplete attempts without
+  silently converting them into shots;
+- upserts the take and its source shot ranges atomically; and
+- is idempotent by replay checksum plus clip ID.
+
+Import uses read-only replay metadata and the sidecar's revision-checked project
+store, so it does not require the Minecraft director lease. A live bridge may
+still be required initially to parse Replay Mod metadata. Opening the replay,
+changing playback or camera timelines, previewing through Minecraft, and
+rendering remain lease-protected operations.
 
 #### `project_validate`
 
@@ -954,6 +1068,14 @@ names.
 | `AuditService` | Persists action, command, edit, cancellation, and failure records. |
 | `ControlOverlay` | Shows connection, active operation, recording state, permissions, and emergency stop. |
 
+Player-led responsibilities:
+
+| Component | Responsibility | Status |
+| --- | --- | --- |
+| `LocalClipController` | Own the one-active-clip state machine, keybind feedback, stable clip IDs, and versioned start/end/revoke markers. | **Implemented** |
+| `ReplayMarkerReader` | Return normalized embedded Replay Mod markers from immutable finalized recordings. | **Implemented** |
+| `CapturedTakeImporter` | Pair markers, diagnose rejected/incomplete attempts, and atomically attach replay-backed clips to a project. | **Implemented** |
+
 Where Replay Mod lacks a native representation for an optional track or piece
 of metadata, Replay MCP stores it in versioned sidecar data and makes that fact
 visible through capability and provenance fields.
@@ -968,14 +1090,24 @@ plugins/replay-director/
 ├── .mcp.json
 ├── bin/replay-mcp-server.mjs
 ├── protocol/bridge-v1/
-└── skills/replay-director-workflow/SKILL.md
+└── skills/
+    ├── replay-director-workflow/SKILL.md
+    └── player-led-capture-workflow/SKILL.md
 ```
 
-The initial package intentionally contains one workflow skill: capability and
-status checks, projects, exclusive control, observe-act-verify direction,
-logical takes, replay editing, preview, rendering, handoff, recovery, and
-guaranteed release. More artistic genre skills can grow without changing the
-MCP protocol.
+The package contains separate agent-led and player-led workflow skills. They
+share capability checks, projects, replay editing, preview, rendering, handoff,
+recovery, and guaranteed release while keeping their live capture authority
+distinct. More artistic genre skills can grow without changing the MCP
+protocol.
+
+The distinct `player-led-capture-workflow` skill does not acquire control or
+call `game_perform` during live performance. It waits for
+the player to finalize the connection-scoped recording, imports the replay and
+clip ranges without a lease, then acquires control only for replay
+opening/editing/rendering. Automated capture remains an optional producer and
+should emit the same marker/import contract so both paths share all downstream
+steps.
 
 The core plugin registers only Replay MCP. An editor profile supplies guidance
 and optional configuration for a separately installed editor MCP.
@@ -1042,6 +1174,15 @@ state, and no automatic reacquisition after lease loss.
 - Screenshots may expose chat, player names, or server information. Observation
   options include HUD hiding and configured redaction for persisted artifacts.
 
+The player-led additions preserve these boundaries:
+
+- clip keybinds are local-only recording annotations and cannot execute game
+  actions, commands, replay edits, or configuration changes;
+- lease-free import is confined to read-only replay metadata plus
+  revision-checked sidecar project writes;
+- imported source files are hashed and treated as immutable; and
+- the importer never grants, acquires, bypasses, or relaxes a director lease.
+
 ## 11. End-to-end workflow — Implemented; live validation pending
 
 The Minecraft-side calls and Codex/sidecar workflow below are implemented and
@@ -1049,6 +1190,8 @@ pass an automated authenticated fake-bridge acceptance test. The complete
 workflow is not marked live-validated until a user-attended graphical client
 completes observation, harmless control, recording/finalization, replay edit,
 preview/still, render, artifact registration, and handoff export.
+
+### 11.1 Existing agent-led capture workflow
 
 ```mermaid
 sequenceDiagram
@@ -1096,6 +1239,61 @@ sequenceDiagram
     end
 ```
 
+### 11.2 Player-led capture and shared editing workflow — Implemented; live validation pending
+
+The target player-led workflow replaces synthetic live performance without
+forking the replay editor. Only capture and ingestion differ; after import,
+both performer origins supply the same `CapturedTake` and use the existing
+replay, render, and post-production tools.
+
+```mermaid
+sequenceDiagram
+    participant P as Player
+    participant A as Codex + player-led skill
+    participant M as Replay MCP
+    participant G as Minecraft submod
+    participant R as Replay Mod
+    participant E as Replay editor / optional editor MCP
+
+    P->>G: join with Replay Mod recording armed
+    Note over A,M: no director lease during player performance
+    P->>G: clip_start
+    G->>R: write versioned start marker + clip ID
+    P->>G: perform normal gameplay
+    alt accepted attempt
+        P->>G: clip_end
+        G->>R: write matching end marker
+    else mistaken attempt
+        P->>G: clip_revoke
+        G->>R: write matching revoke marker
+    end
+    P->>G: leave world when capture session is complete
+    R-->>G: finalize immutable .mcpr
+
+    A->>M: replay_list / replay_get
+    A->>M: project_import_replay (no lease)
+    M->>G: read finalized replay metadata and markers
+    G-->>M: replay identity + normalized markers
+    M->>M: pair clips and build CapturedTake
+    M-->>A: accepted ranges + rejected/incomplete diagnostics
+
+    A->>M: control_acquire
+    A->>M: replay_open
+    A->>M: inspect marked ranges and author camera/time paths
+    A->>M: replay_preview / replay_validate_range
+    A->>M: render_start
+    M-->>A: rendered clip artifacts
+    A->>M: project_export_handoff
+    A->>E: assemble, visually verify, and export
+    A->>M: control_release
+```
+
+Clip timestamps eliminate full-session discovery but do not replace camera
+authoring, replay-time mapping, clip ordering, settled-seek/chunk validation,
+render verification, or final editorial decisions. The importer supplies
+replay identity and project association; the AI supplies those downstream edit
+decisions from the accepted ranges.
+
 ## 12. Scope boundaries
 
 **Implementation status:** The included Minecraft, sidecar, project/provenance,
@@ -1111,6 +1309,16 @@ Included:
 - Replay Mod recording, playback, timeline editing, preview, and rendering;
 - project/provenance manifests and editor handoff; and
 - optional skills for independently installed editor MCPs.
+
+Included player-led extension — **Implemented; live validation pending**:
+
+- three remappable local `clip_start`, `clip_end`, and `clip_revoke` keybinds;
+- versioned non-destructive Replay Mod markers with stable clip IDs;
+- normalized marker reads from finalized replays;
+- lease-free, revision-checked, idempotent `project_import_replay`;
+- a common `CapturedTake` handoff for player and agent performers; and
+- a distinct player-led plugin workflow that begins acquiring a lease only for
+  replay opening, editing, previewing, and rendering.
 
 Not included in the core:
 
@@ -1504,3 +1712,74 @@ optimization paths are not yet live-validated, specifically:
 Those checks are intentionally deferred to the next broader feature-complete
 E2E. Their absence does not invalidate the automated suites, but the time goal
 must not be claimed as achieved until that run reports phase timings.
+
+### 13.9 Player-led route verification snapshot (2026-09-19)
+
+- 20 Vitest tests pass, including unordered/revoked/incomplete/malformed marker
+  parsing, revision conflicts, repeated-import idempotency, lease-free import,
+  the 39-tool fake-bridge workflow, and exact bundled-plugin stdio startup;
+- 22 JUnit tests pass, including four local clip state/grammar tests, and the
+  Minecraft 26.2 client source compiles against Replay Mod 26.2-2.6.27;
+- TypeScript strict typecheck, production build, deterministic plugin bundle,
+  and `git diff --check` pass; and
+- live graphical player capture and rendered-output acceptance remain pending
+  under section 14.3.
+
+## 14. Player-led capture implementation and acceptance — Implemented; live acceptance pending
+
+The implementation and automated coverage below are complete. The graphical
+acceptance run in section 14.3 remains outstanding.
+
+### 14.1 Implemented scope
+
+1. Define the versioned clip marker grammar and `CapturedTake` schema, including
+   accepted, revoked, incomplete, duplicate, and malformed states.
+2. Implement the local one-active-clip controller, three remappable keybinds,
+   and unambiguous HUD and chat feedback.
+3. Extend read-only replay metadata with normalized embedded markers and a
+   stable replay identity/checksum.
+4. Implement lease-free `project_import_replay` and idempotent project/take/shot
+   updates with explicit `replay_in_us` and `replay_out_us` fields.
+5. Route automated capture through the same marker/import contract while
+   retaining its action traces as optional provenance.
+6. Add the player-led plugin workflow and keep `game_perform` out of its live
+   capture phase.
+7. Correct or constrain preview sampling so authored output-time review cannot
+   be confused with raw replay-time sampling.
+8. Update public schemas, bundled plugin copies, documentation, and compatibility
+   fixtures only after the behavior is implemented and tested at its canonical
+   source.
+
+### 14.2 Automated coverage
+
+- clip-controller transition tests for start/end/revoke, invalid keys, missing
+  recording, disconnect, and unique IDs;
+- marker parsing with unordered markers, duplicates, missing endpoints, revoke
+  after start, repeated imports, and zero/negative ranges;
+- contract tests proving marker metadata reads and replay import do not require
+  a lease;
+- project tests proving atomic revision conflicts, immutable source references,
+  idempotency, and no accepted shot for revoked/incomplete attempts; and
+- a fake-bridge player-led workflow that performs capture import without
+  `control_acquire`, then acquires control only for replay editing/rendering.
+
+### 14.3 Required live acceptance
+
+The feature remains pending until a user-attended graphical run demonstrates:
+
+1. Replay Mod is armed and the player records at least two accepted clips, one
+   revoked attempt, and one deliberately incomplete attempt without an agent
+   lease.
+2. The finalized immutable `.mcpr` contains the expected versioned markers and
+   source timestamps.
+3. `project_import_replay` imports only accepted pairs, reports the rejected and
+   incomplete attempts, and can be repeated without duplication.
+4. The imported player take is indistinguishable from an imported automated
+   take to the replay-editing workflow except for provenance.
+5. The agent opens a working copy, visually reviews only the accepted source
+   windows, authors camera/time paths, validates settled frames, and renders the
+   expected clips.
+6. Actual rendered frames and the final editor export are visually inspected;
+   raw replay-time contact sheets alone are not acceptance evidence.
+7. The original recording checksum is unchanged, the editing lease is released,
+   and all generated artifacts and project references remain recoverable.

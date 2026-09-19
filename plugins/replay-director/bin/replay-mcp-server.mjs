@@ -2279,7 +2279,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes, createHash: createHash3 } = __require("crypto");
+    var { randomBytes, createHash: createHash4 } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -2947,7 +2947,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash3("sha1").update(key + GUID).digest("base64");
+        const digest = createHash4("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3316,7 +3316,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash3 } = __require("crypto");
+    var { createHash: createHash4 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3623,7 +3623,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash3("sha1").update(key + GUID).digest("base64");
+        const digest = createHash4("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -7290,7 +7290,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject4 = isObject;
+  const isObject5 = isObject;
   const catchall = def.catchall;
   let value;
   const memo3 = globalConfig.memoizer;
@@ -7298,7 +7298,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject4(input2)) {
+    if (!isObject5(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -7434,7 +7434,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject4 = isObject;
+  const isObject5 = isObject;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -7443,7 +7443,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject4(input2)) {
+    if (!isObject5(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -38704,6 +38704,33 @@ var ProjectStore = class {
     await this.#projects.set(next);
     return next;
   }
+  async importCapturedTake(id, baseRevision, sceneId, capturedTake) {
+    const project = this.get(id);
+    if (project.revision !== baseRevision) throw new SidecarError("revision_conflict", `project revision is ${project.revision}, not ${baseRevision}`, { current_revision: project.revision });
+    const next = structuredClone(project);
+    const scene = requiredScene(next, sceneId);
+    const takes = ensureObjectArray(scene, "takes");
+    const sameId = takes.find((take) => take.id === capturedTake.id);
+    if (sameId && sameId.replay_sha256 !== capturedTake.replay_sha256) {
+      throw new SidecarError("conflict", `take ${capturedTake.id} already references another immutable replay`);
+    }
+    const sameSource = takes.find((take) => take.replay_sha256 === capturedTake.replay_sha256);
+    const normalized = structuredClone(capturedTake);
+    if (sameSource && sameSource.id !== normalized.id) {
+      normalized.id = String(sameSource.id);
+      normalized.take_id = normalized.id;
+    }
+    const existingIndex = takes.findIndex((take) => take.id === normalized.id);
+    if (existingIndex >= 0 && JSON.stringify(takes[existingIndex]) === JSON.stringify(normalized)) {
+      return { project, captured_take: normalized, changed: false };
+    }
+    if (existingIndex < 0) takes.push(normalized);
+    else takes[existingIndex] = normalized;
+    next.revision++;
+    next.updated_at = (/* @__PURE__ */ new Date()).toISOString();
+    await this.#projects.set(next);
+    return { project: next, captured_take: normalized, changed: true };
+  }
   validate(project) {
     const errors = [];
     const warnings = [];
@@ -39035,6 +39062,107 @@ async function schemaRoot() {
 // src/tools/register.ts
 import { mkdir as mkdir4, readFile as readFile5, writeFile as writeFile2 } from "node:fs/promises";
 import { join as join7 } from "node:path";
+
+// src/capture/importer.ts
+import { createHash as createHash3 } from "node:crypto";
+import { createReadStream as createReadStream2 } from "node:fs";
+import { realpath as realpath3, stat as stat2 } from "node:fs/promises";
+var CLIP_MARKER = /^replay_mcp:clip:v1:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(start|end|revoke)$/i;
+function parseClipMarkers(markers) {
+  if (!Array.isArray(markers)) throw new SidecarError("invalid_replay_metadata", "replay metadata did not contain a marker array");
+  const groups = /* @__PURE__ */ new Map();
+  const diagnostics = [];
+  for (const raw of markers) {
+    if (!isObject3(raw) || typeof raw.name !== "string") {
+      diagnostics.push({ status: "malformed", code: "invalid_marker_record", message: "marker record has no string name", markers: [] });
+      continue;
+    }
+    if (!raw.name.startsWith("replay_mcp:clip:")) continue;
+    const match = CLIP_MARKER.exec(raw.name);
+    const record2 = typeof raw.time_us === "number" && Number.isSafeInteger(raw.time_us) && raw.time_us >= 0 ? { name: raw.name, time_us: raw.time_us } : void 0;
+    if (!match || !record2) {
+      diagnostics.push({
+        ...match ? { clip_id: match[1].toLowerCase() } : {},
+        status: "malformed",
+        code: "invalid_clip_marker",
+        message: "clip marker does not match replay_mcp:clip:v1:<uuid>:<start|end|revoke> with a non-negative integer time_us",
+        markers: record2 ? [record2] : []
+      });
+      continue;
+    }
+    const clipId = match[1].toLowerCase();
+    const kind = match[2].toLowerCase();
+    const group = groups.get(clipId) ?? { start: [], end: [], revoke: [] };
+    group[kind].push(record2);
+    groups.set(clipId, group);
+  }
+  const accepted = [];
+  for (const [clipId, group] of groups) {
+    const all = [...group.start, ...group.end, ...group.revoke].sort((a, b) => a.time_us - b.time_us || a.name.localeCompare(b.name));
+    if (group.start.length > 1 || group.end.length > 1 || group.revoke.length > 1) {
+      diagnostics.push({ clip_id: clipId, status: "duplicate", code: "duplicate_clip_marker", message: "clip has duplicate start, end, or revoke markers", markers: all });
+      continue;
+    }
+    if (group.revoke.length === 1) {
+      diagnostics.push({ clip_id: clipId, status: "revoked", code: "clip_revoked", message: "clip was intentionally revoked and is not includable", markers: all });
+      continue;
+    }
+    if (group.start.length !== 1 || group.end.length !== 1) {
+      diagnostics.push({ clip_id: clipId, status: "incomplete", code: "missing_clip_endpoint", message: "clip does not have exactly one start and one end marker", markers: all });
+      continue;
+    }
+    const replayIn = group.start[0].time_us, replayOut = group.end[0].time_us;
+    if (replayOut <= replayIn) {
+      diagnostics.push({ clip_id: clipId, status: "malformed", code: "invalid_clip_range", message: "clip end must be later than its start", markers: all });
+      continue;
+    }
+    accepted.push({ clip_id: clipId, replay_in_us: replayIn, replay_out_us: replayOut });
+  }
+  accepted.sort((a, b) => a.replay_in_us - b.replay_in_us || a.clip_id.localeCompare(b.clip_id));
+  diagnostics.sort((a, b) => (a.clip_id ?? "").localeCompare(b.clip_id ?? "") || a.code.localeCompare(b.code));
+  return { accepted, diagnostics };
+}
+async function verifyReplaySource(metadata) {
+  if (metadata.finalized !== true || metadata.source_immutable !== true) throw new SidecarError("replay_not_finalized", "replay metadata does not identify a finalized immutable source");
+  if (typeof metadata.path !== "string" || typeof metadata.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(metadata.sha256)) {
+    throw new SidecarError("invalid_replay_metadata", "replay metadata is missing its path or SHA-256 identity");
+  }
+  if (typeof metadata.duration_us !== "number" || !Number.isSafeInteger(metadata.duration_us) || metadata.duration_us < 0) {
+    throw new SidecarError("invalid_replay_metadata", "replay duration_us must be a non-negative integer");
+  }
+  const path = await realpath3(metadata.path);
+  const before = await stat2(path);
+  if (!before.isFile()) throw new SidecarError("invalid_replay_metadata", "replay source is not a regular file");
+  if (typeof metadata.size === "number" && metadata.size !== before.size) throw new SidecarError("replay_changed", "replay size changed after bridge metadata was read");
+  const sha256 = await hashFile2(path);
+  const after = await stat2(path);
+  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || sha256 !== metadata.sha256.toLowerCase()) {
+    throw new SidecarError("replay_changed", "replay changed while its immutable source identity was being verified");
+  }
+  return {
+    path,
+    sha256,
+    size: after.size,
+    duration_us: metadata.duration_us,
+    compatibility: Object.fromEntries(["minecraft_version", "file_format", "file_format_version", "created_at_ms", "server"].filter((key) => metadata[key] !== void 0).map((key) => [key, metadata[key]]))
+  };
+}
+function capturedTakeId(sha256) {
+  return `take_${sha256.slice(0, 24)}`;
+}
+function capturedShotId(sha256, clipId) {
+  return `shot_${createHash3("sha256").update(`${sha256}:${clipId}`).digest("hex").slice(0, 24)}`;
+}
+async function hashFile2(path) {
+  const hash2 = createHash3("sha256");
+  for await (const chunk of createReadStream2(path)) hash2.update(chunk);
+  return hash2.digest("hex");
+}
+function isObject3(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/tools/register.ts
 var instance = { instance_id: external_exports.uuid().optional().describe("Target instance; omit only when exactly one instance is live") };
 var loose = external_exports.object(instance).catchall(external_exports.unknown());
 var requestId = external_exports.string().min(1).max(128).optional();
@@ -39057,6 +39185,7 @@ var READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, o
 var GAME_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true };
 var MUTATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
 var PROJECT_MUTATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+var PROJECT_IMPORT = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 function registerTools(server, runtime) {
   server.registerTool("system_status", {
     title: "Replay MCP system status",
@@ -39187,7 +39316,7 @@ function registerTools(server, runtime) {
     const [artifact] = await runtime.registerArtifacts(frame, client, { provenance: { tool: "game_observe" } }, args.persist);
     if (!artifact) throw new SidecarError("artifact_invalid", "bridge framebuffer response did not contain an artifact descriptor");
     const image = await runtime.artifacts.inlineImage(artifact);
-    const snapshot = isObject3(frame.snapshot) ? frame.snapshot : objectResult(await client.call("observation.snapshot", {}));
+    const snapshot = isObject4(frame.snapshot) ? frame.snapshot : objectResult(await client.call("observation.snapshot", {}));
     return okWith(`Observed ${client.descriptor.displayName} at tick ${String(frame.capture_tick ?? snapshot.tick ?? "unknown")}.`, {
       instance_id: client.descriptor.instanceId,
       frame_id: artifact.id,
@@ -39524,6 +39653,68 @@ function registerTools(server, runtime) {
     const project = await runtime.projects.apply(project_id, base_revision, operations);
     return ok(`Project advanced to revision ${project.revision}.`, { project, validation: runtime.projects.validate(project) });
   }));
+  server.registerTool("project_import_replay", {
+    title: "Import finalized replay clips",
+    description: "Lease-free import of a finalized immutable replay and its versioned player or agent clip markers into a revisioned project.",
+    inputSchema: external_exports.object({
+      ...instance,
+      project_id: external_exports.uuid(),
+      base_revision: external_exports.number().int().positive(),
+      scene_id: external_exports.string().min(1),
+      replay_id: external_exports.string().optional(),
+      path: external_exports.string().optional(),
+      take_id: external_exports.string().min(1).max(128).optional(),
+      provenance: external_exports.enum(["player", "agent"]).default("player")
+    }).refine((value) => value.replay_id || value.path, "replay_id or path is required"),
+    annotations: PROJECT_IMPORT
+  }, safe(async (args) => {
+    const replayPath = args.path ?? args.replay_id;
+    const { result, client } = await runtime.read("replay.metadata", { ...args.instance_id ? { instance_id: args.instance_id } : {}, path: replayPath });
+    const metadata = objectResult(result);
+    const source = await verifyReplaySource(metadata);
+    const parsed = parseClipMarkers(metadata.markers);
+    const accepted = parsed.accepted.filter((clip) => {
+      if (clip.replay_out_us <= source.duration_us) return true;
+      parsed.diagnostics.push({ clip_id: clip.clip_id, status: "malformed", code: "clip_outside_replay", message: "clip end is beyond the replay duration", markers: [] });
+      return false;
+    });
+    const takeId = args.take_id ?? capturedTakeId(source.sha256);
+    const capturedTake = {
+      id: takeId,
+      take_id: takeId,
+      project_id: args.project_id,
+      scene_id: args.scene_id,
+      format: "replay-mcp.captured-take/1",
+      provenance: args.provenance,
+      replay_id: typeof metadata.replay_id === "string" ? metadata.replay_id : source.sha256,
+      replay_path: source.path,
+      replay_sha256: source.sha256,
+      replay_size: source.size,
+      duration_us: source.duration_us,
+      compatibility: source.compatibility,
+      accepted_clips: accepted,
+      diagnostics: parsed.diagnostics,
+      shots: accepted.map((clip) => ({
+        id: capturedShotId(source.sha256, clip.clip_id),
+        source_clip_id: clip.clip_id,
+        replay_in_us: clip.replay_in_us,
+        replay_out_us: clip.replay_out_us,
+        in_us: clip.replay_in_us,
+        out_us: clip.replay_out_us,
+        source_immutable: true
+      }))
+    };
+    const imported = await runtime.projects.importCapturedTake(args.project_id, args.base_revision, args.scene_id, capturedTake);
+    return ok(imported.changed ? `Imported ${accepted.length} accepted replay clip${accepted.length === 1 ? "" : "s"}.` : "Replay clips were already imported; no project change was needed.", {
+      instance_id: client.descriptor.instanceId,
+      project: imported.project,
+      captured_take: imported.captured_take,
+      changed: imported.changed,
+      accepted_count: accepted.length,
+      diagnostic_count: parsed.diagnostics.length,
+      validation: runtime.projects.validate(imported.project)
+    });
+  }));
   server.registerTool("project_validate", {
     title: "Validate production project",
     description: "Check references, ranges, renders, continuity, frame rates, and handoff completeness.",
@@ -39584,7 +39775,7 @@ async function performWithCapture(runtime, args, signal) {
   const progressListener = (event) => {
     const step = typeof event.step === "number" ? event.step : -1;
     const action = actions[step];
-    if ((captureMode === "checkpoints" || captureMode === "after_and_on_failure") && isObject3(action) && action.kind === "checkpoint") {
+    if ((captureMode === "checkpoints" || captureMode === "after_and_on_failure") && isObject4(action) && action.kind === "checkpoint") {
       capturePromises.push(capture(`checkpoint:${step}`));
     }
   };
@@ -39663,14 +39854,14 @@ async function runSampledPreview(runtime, instanceId, jobId, args, signal, valid
     }, signal));
     const registered = await runtime.registerArtifacts(result, client, { ...metadata, provenance: { ...metadata.provenance, output_time_us: timeUs, replay_time_us: result.replay_time_us } });
     artifacts.push(...registered);
-    const validation = isObject3(result.validation) ? result.validation : {};
+    const validation = isObject4(result.validation) ? result.validation : {};
     samples.push({ output_time_us: result.output_time_us ?? timeUs, replay_time_us: result.replay_time_us, validation });
     labels.push(`${formatTime(Number(result.output_time_us ?? timeUs))} out / ${formatTime(Number(result.replay_time_us ?? 0))} replay`);
     await runtime.jobs.update(jobId, { progress: (index + 1) / frameCount });
   }
   if (signal.aborted || runtime.jobs.get(jobId)?.status === "cancelled") return;
-  const errors = samples.flatMap((sample) => isObject3(sample.validation) && Array.isArray(sample.validation.errors) ? sample.validation.errors : []);
-  const warnings = samples.flatMap((sample) => isObject3(sample.validation) && Array.isArray(sample.validation.warnings) ? sample.validation.warnings : []);
+  const errors = samples.flatMap((sample) => isObject4(sample.validation) && Array.isArray(sample.validation.errors) ? sample.validation.errors : []);
+  const warnings = samples.flatMap((sample) => isObject4(sample.validation) && Array.isArray(sample.validation.warnings) ? sample.validation.warnings : []);
   let output2 = artifacts;
   if (!validationOnly && args.output_mode === "contact_sheet" && artifacts.length) output2 = [await buildContactSheet(runtime, artifacts, `preview-${jobId}`, labels)];
   await runtime.jobs.update(jobId, {
@@ -39728,9 +39919,9 @@ function normalizeOutputRange(args) {
 }
 function timelineDurationUs(timeline) {
   let maximum = 0;
-  if (!isObject3(timeline.tracks)) return maximum;
+  if (!isObject4(timeline.tracks)) return maximum;
   for (const frames of Object.values(timeline.tracks)) if (Array.isArray(frames)) for (const frame of frames) {
-    if (isObject3(frame) && typeof frame.time_us === "number") maximum = Math.max(maximum, frame.time_us);
+    if (isObject4(frame) && typeof frame.time_us === "number") maximum = Math.max(maximum, frame.time_us);
   }
   return maximum;
 }
@@ -39776,7 +39967,7 @@ function errorCode(error62) {
 function errorMessage(error62) {
   return error62 instanceof Error ? error62.message : String(error62);
 }
-function isObject3(value) {
+function isObject4(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function normalizeReplayPath(args) {
@@ -39818,9 +40009,9 @@ function projectGameQuery(snapshot, args) {
 function filterObserved(value, args) {
   if (!Array.isArray(value)) return [];
   const ids = Array.isArray(args.observation_ids) ? new Set(args.observation_ids.filter((item) => typeof item === "string")) : void 0;
-  const bounds = isObject3(args.bounds) ? args.bounds : void 0;
+  const bounds = isObject4(args.bounds) ? args.bounds : void 0;
   const filtered = value.filter((item) => {
-    if (!isObject3(item)) return false;
+    if (!isObject4(item)) return false;
     if (ids && !ids.has(String(item.observation_id))) return false;
     if (typeof args.distance === "number" && typeof item.distance === "number" && item.distance > args.distance) return false;
     if (typeof args.type === "string" && String(item.type ?? item.state ?? "") !== args.type) return false;

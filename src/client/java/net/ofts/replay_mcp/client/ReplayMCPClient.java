@@ -29,6 +29,9 @@ public class ReplayMCPClient implements ClientModInitializer {
         KeyMapping.Category category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("replay_mcp", "controls"));
         KeyMapping controls = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.replay_mcp.controls", InputConstants.Type.KEYSYM, InputConstants.KEY_F10, category));
         KeyMapping emergency = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.replay_mcp.emergency_stop", InputConstants.Type.KEYSYM, InputConstants.KEY_F12, category));
+        KeyMapping clipStart = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.replay_mcp.clip_start", InputConstants.Type.KEYSYM, InputConstants.KEY_F6, category));
+        KeyMapping clipEnd = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.replay_mcp.clip_end", InputConstants.Type.KEYSYM, InputConstants.KEY_F7, category));
+        KeyMapping clipRevoke = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.replay_mcp.clip_revoke", InputConstants.Type.KEYSYM, InputConstants.KEY_F8, category));
 
         ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
             try {
@@ -42,6 +45,9 @@ public class ReplayMCPClient implements ClientModInitializer {
             if (services != null) services.tick();
             while (emergency.consumeClick()) if (services != null) services.emergencyStop();
             while (controls.consumeClick()) if (services != null) client.setScreenAndShow(new ReplayMcpControlScreen(services));
+            while (clipStart.consumeClick()) if (services != null) services.localClipStart();
+            while (clipEnd.consumeClick()) if (services != null) services.localClipEnd();
+            while (clipRevoke.consumeClick()) if (services != null) services.localClipRevoke();
         });
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("replay_mcp", "status"), (graphics, tick) -> {
             if (services == null) return;

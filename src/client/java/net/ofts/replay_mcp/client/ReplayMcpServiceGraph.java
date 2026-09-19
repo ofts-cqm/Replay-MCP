@@ -86,7 +86,10 @@ public final class ReplayMcpServiceGraph implements AutoCloseable {
     public void emergencyStop() { operations.cancelAll(); adapter.releaseAllInputs(); leases.emergencyStop(); }
     public void releaseInputs() { adapter.releaseAllInputs(); }
     public void humanOverride() { if (config.physicalInputRevokesLease) leases.humanOverride(); }
-    public void tick() { leases.status(); adapter.tickActions(); }
+    public void tick() { leases.status(); adapter.tickActions(); adapter.tickLocalClips(); }
+    public void localClipStart() { adapter.localClipStart(); }
+    public void localClipEnd() { adapter.localClipEnd(); }
+    public void localClipRevoke() { adapter.localClipRevoke(); }
     public void saveConfig() {
         try { config.save(gameDir.resolve("config/replay_mcp.json")); }
         catch (IOException ignored) { }
@@ -94,7 +97,8 @@ public final class ReplayMcpServiceGraph implements AutoCloseable {
 
     public String hudStatus() {
         if (!config.bridgeEnabled || server == null) return "Replay MCP: bridge disabled (restart after enabling)";
-        return leases.status().map(l -> "Replay MCP: directed by " + l.ownerLabel()).orElse("Replay MCP: connected, no director");
+        String control = leases.status().map(l -> "directed by " + l.ownerLabel()).orElse("no director");
+        return "Replay MCP: " + control + " | " + adapter.localClipHudStatus();
     }
 
     @Override public void close() {

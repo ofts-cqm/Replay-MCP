@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { JsonCollection, writeJsonAtomic } from "../persistence.js";
 import { SidecarError } from "../bridge/discovery.js";
 import type { ArtifactStore } from "../artifacts/store.js";
+import type { CapturedTake } from "../capture/importer.js";
 
 export interface ProjectManifest {
   id: string;
@@ -63,6 +64,36 @@ export class ProjectStore {
     next.updated_at = new Date().toISOString();
     await this.#projects.set(next);
     return next;
+  }
+
+  async importCapturedTake(id: string, baseRevision: number, sceneId: string, capturedTake: CapturedTake): Promise<{
+    project: ProjectManifest; captured_take: CapturedTake; changed: boolean;
+  }> {
+    const project = this.get(id);
+    if (project.revision !== baseRevision) throw new SidecarError("revision_conflict", `project revision is ${project.revision}, not ${baseRevision}`, { current_revision: project.revision });
+    const next = structuredClone(project);
+    const scene = requiredScene(next, sceneId);
+    const takes = ensureObjectArray(scene, "takes");
+    const sameId = takes.find((take) => take.id === capturedTake.id);
+    if (sameId && sameId.replay_sha256 !== capturedTake.replay_sha256) {
+      throw new SidecarError("conflict", `take ${capturedTake.id} already references another immutable replay`);
+    }
+    const sameSource = takes.find((take) => take.replay_sha256 === capturedTake.replay_sha256);
+    const normalized = structuredClone(capturedTake);
+    if (sameSource && sameSource.id !== normalized.id) {
+      normalized.id = String(sameSource.id);
+      normalized.take_id = normalized.id;
+    }
+    const existingIndex = takes.findIndex((take) => take.id === normalized.id);
+    if (existingIndex >= 0 && JSON.stringify(takes[existingIndex]) === JSON.stringify(normalized)) {
+      return { project, captured_take: normalized, changed: false };
+    }
+    if (existingIndex < 0) takes.push(normalized as unknown as Record<string, unknown>);
+    else takes[existingIndex] = normalized as unknown as Record<string, unknown>;
+    next.revision++;
+    next.updated_at = new Date().toISOString();
+    await this.#projects.set(next);
+    return { project: next, captured_take: normalized, changed: true };
   }
 
   validate(project: ProjectManifest): { valid: boolean; errors: string[]; warnings: string[] } {

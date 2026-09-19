@@ -8,6 +8,7 @@ import type { ArtifactRecord } from "../artifacts/store.js";
 import type { JobRecord } from "../jobs/store.js";
 import { ReplayMcpRuntime, objectResult } from "../runtime.js";
 import { SIDECAR_VERSION } from "../types.js";
+import { capturedShotId, capturedTakeId, parseClipMarkers, verifyReplaySource, type CapturedTake } from "../capture/importer.js";
 
 const instance = { instance_id: z.uuid().optional().describe("Target instance; omit only when exactly one instance is live") };
 const loose = z.object(instance).catchall(z.unknown());
@@ -33,6 +34,7 @@ const READ: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idem
 const GAME_READ: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true };
 const MUTATE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
 const PROJECT_MUTATE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+const PROJECT_IMPORT: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
 type ToolContent =
   | { type: "text"; text: string }
@@ -421,6 +423,47 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   }, safe(async ({ project_id, base_revision, operations }) => {
     const project = await runtime.projects.apply(project_id, base_revision, operations);
     return ok(`Project advanced to revision ${project.revision}.`, { project, validation: runtime.projects.validate(project) });
+  }));
+
+  server.registerTool("project_import_replay", {
+    title: "Import finalized replay clips",
+    description: "Lease-free import of a finalized immutable replay and its versioned player or agent clip markers into a revisioned project.",
+    inputSchema: z.object({
+      ...instance, project_id: z.uuid(), base_revision: z.number().int().positive(), scene_id: z.string().min(1),
+      replay_id: z.string().optional(), path: z.string().optional(), take_id: z.string().min(1).max(128).optional(),
+      provenance: z.enum(["player", "agent"]).default("player"),
+    }).refine((value) => value.replay_id || value.path, "replay_id or path is required"), annotations: PROJECT_IMPORT,
+  }, safe(async (args) => {
+    const replayPath = args.path ?? args.replay_id!;
+    const { result, client } = await runtime.read("replay.metadata", { ...(args.instance_id ? { instance_id: args.instance_id } : {}), path: replayPath });
+    const metadata = objectResult(result);
+    const source = await verifyReplaySource(metadata);
+    const parsed = parseClipMarkers(metadata.markers);
+    const accepted = parsed.accepted.filter((clip) => {
+      if (clip.replay_out_us <= source.duration_us) return true;
+      parsed.diagnostics.push({ clip_id: clip.clip_id, status: "malformed", code: "clip_outside_replay", message: "clip end is beyond the replay duration", markers: [] });
+      return false;
+    });
+    const takeId = args.take_id ?? capturedTakeId(source.sha256);
+    const capturedTake: CapturedTake = {
+      id: takeId, take_id: takeId, project_id: args.project_id, scene_id: args.scene_id,
+      format: "replay-mcp.captured-take/1", provenance: args.provenance,
+      replay_id: typeof metadata.replay_id === "string" ? metadata.replay_id : source.sha256,
+      replay_path: source.path, replay_sha256: source.sha256, replay_size: source.size,
+      duration_us: source.duration_us, compatibility: source.compatibility,
+      accepted_clips: accepted, diagnostics: parsed.diagnostics,
+      shots: accepted.map((clip) => ({
+        id: capturedShotId(source.sha256, clip.clip_id), source_clip_id: clip.clip_id,
+        replay_in_us: clip.replay_in_us, replay_out_us: clip.replay_out_us,
+        in_us: clip.replay_in_us, out_us: clip.replay_out_us, source_immutable: true,
+      })),
+    };
+    const imported = await runtime.projects.importCapturedTake(args.project_id, args.base_revision, args.scene_id, capturedTake);
+    return ok(imported.changed ? `Imported ${accepted.length} accepted replay clip${accepted.length === 1 ? "" : "s"}.` : "Replay clips were already imported; no project change was needed.", {
+      instance_id: client.descriptor.instanceId, project: imported.project, captured_take: imported.captured_take,
+      changed: imported.changed, accepted_count: accepted.length, diagnostic_count: parsed.diagnostics.length,
+      validation: runtime.projects.validate(imported.project),
+    });
   }));
 
   server.registerTool("project_validate", {

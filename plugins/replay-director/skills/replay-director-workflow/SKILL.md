@@ -57,6 +57,12 @@ the finalization job returned by `recording_stop` with
 completes. If automated finalization is unavailable or fails recoverably, keep
 the job/take link and fall back to the explicit user-controlled disconnect.
 
+The logical start/end markers use the same versioned clip grammar as
+player-led capture. After finalization, call `project_import_replay` with the
+current project revision, scene, finalized source path, take ID, and
+`provenance: agent`. Use its returned `CapturedTake` as the source-range handoff
+so agent and player performances enter replay editing through one contract.
+
 ## Edit, preview, and render
 
 1. Open the replay. Source recordings are immutable; edits use the working

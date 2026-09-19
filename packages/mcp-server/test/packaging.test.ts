@@ -59,7 +59,7 @@ describe("portable and Codex plugin packaging", () => {
     try {
       await client.connect(transport);
       const tools = await client.listTools();
-      expect(tools.tools, stderr).toHaveLength(38);
+      expect(tools.tools, stderr).toHaveLength(39);
       const status = await client.callTool({ name: "system_status", arguments: {} });
       expect(status.isError, stderr).not.toBe(true);
       expect(status.structuredContent).toMatchObject({ state: "offline" });

@@ -99,7 +99,18 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
           break;
         }
         case "replay.list": success([{ name: "take.mcpr", path: "take.mcpr", size: 100 }]); break;
-        case "replay.metadata": success({ path: params.path, duration_us: 5_000_000, minecraft_version: "26.2" }); break;
+        case "replay.metadata": success({
+          path: replayPath, replay_id: createHash("sha256").update(replay).digest("hex"), sha256: createHash("sha256").update(replay).digest("hex"),
+          size: replay.length, duration_us: 5_000_000, minecraft_version: "26.2", file_format: "MCPR", file_format_version: 14,
+          finalized: true, source_immutable: true,
+          markers: [
+            { name: "replay_mcp:clip:v1:11111111-1111-4111-8111-111111111111:end", time_us: 2_000_000 },
+            { name: "replay_mcp:clip:v1:22222222-2222-4222-8222-222222222222:start", time_us: 2_500_000 },
+            { name: "replay_mcp:clip:v1:11111111-1111-4111-8111-111111111111:start", time_us: 1_000_000 },
+            { name: "replay_mcp:clip:v1:22222222-2222-4222-8222-222222222222:revoke", time_us: 3_000_000 },
+            { name: "replay_mcp:clip:v1:33333333-3333-4333-8333-333333333333:start", time_us: 4_000_000 },
+          ],
+        }); break;
         case "replay.open": success({ source: params.path, working_copy: "working.mcpr", source_immutable: true }); break;
         case "replay.close": success({ success: true }); break;
         case "replay.save": success({ success: true, path: "take-edit-1.mcpr" }); break;
@@ -132,7 +143,7 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
   function status(extra: Record<string, unknown> = {}) {
     return {
       minecraft_version: "26.2", replay_mod_version: "26.2-2.6.27", connected: true, runtime_mode: "live_idle",
-      capabilities: { structured_observation: true, framebuffer_capture: true, native_timeline: true, native_fov: false, native_look_at: false, navigation: { ground: true, engine: "minecraft_walk_node_evaluator", loaded_chunks_only: true, max_distance: 128, unsupported_travel_modes: ["swimming", "flight", "vehicles"] } },
+      capabilities: { structured_observation: true, framebuffer_capture: true, player_clip_capture: true, normalized_replay_markers: true, native_timeline: true, native_fov: false, native_look_at: false, navigation: { ground: true, engine: "minecraft_walk_node_evaluator", loaded_chunks_only: true, max_distance: 128, unsupported_travel_modes: ["swimming", "flight", "vehicles"] } },
       lease: leaseOwner ? { held: true, epoch: fence, owner_label: "test" } : { held: false, epoch: fence },
       lease_policy: { ttl_ms: 15_000, heartbeat_interval_ms: 1_000, idle_ceiling_ms: 300_000 },
       command_policy: { enabled: false, locally_managed: true },

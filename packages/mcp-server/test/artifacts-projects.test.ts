@@ -7,6 +7,7 @@ import { ArtifactStore } from "../src/artifacts/store.js";
 import { ProjectStore } from "../src/projects/store.js";
 import { JobStore } from "../src/jobs/store.js";
 import { AuditLog } from "../src/persistence.js";
+import type { CapturedTake } from "../src/capture/importer.js";
 
 describe("artifacts and projects", () => {
   it("confines paths and verifies sizes and checksums", async () => {
@@ -48,6 +49,34 @@ describe("artifacts and projects", () => {
     const handoff = await projects.exportHandoff(nested);
     expect(handoff.manifest).toMatchObject({ format: "replay-mcp.handoff/1", project_revision: 3 });
     expect(handoff.sha256).toHaveLength(64);
+  });
+
+  it("atomically and idempotently imports captured takes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "replay-mcp-captured-takes-"));
+    const artifacts = new ArtifactStore(root); await artifacts.load();
+    const projects = new ProjectStore(root, artifacts); await projects.load();
+    const project = await projects.create({ title: "Player Film" });
+    const withScene = await projects.apply(project.id, 1, [{ op: "upsert_scene", scene: { id: "scene-player", takes: [] } }]);
+    const captured: CapturedTake = {
+      id: "take-player", take_id: "take-player", project_id: project.id, scene_id: "scene-player",
+      format: "replay-mcp.captured-take/1", provenance: "player",
+      replay_id: "a".repeat(64), replay_path: "/replays/player.mcpr", replay_sha256: "a".repeat(64), replay_size: 100,
+      duration_us: 1_000_000, compatibility: { minecraft_version: "26.2" },
+      accepted_clips: [{ clip_id: "11111111-1111-4111-8111-111111111111", replay_in_us: 100, replay_out_us: 200 }],
+      diagnostics: [{ clip_id: "22222222-2222-4222-8222-222222222222", status: "revoked", code: "clip_revoked", message: "revoked", markers: [] }],
+      shots: [{ id: "shot-player", replay_in_us: 100, replay_out_us: 200, in_us: 100, out_us: 200 }],
+    };
+    const imported = await projects.importCapturedTake(project.id, withScene.revision, "scene-player", captured);
+    expect(imported.changed).toBe(true);
+    expect(imported.project.revision).toBe(3);
+    const repeated = await projects.importCapturedTake(project.id, imported.project.revision, "scene-player", captured);
+    expect(repeated.changed).toBe(false);
+    expect(repeated.project.revision).toBe(3);
+    const takes = repeated.project.scenes[0]!.takes as Record<string, unknown>[];
+    expect(takes).toHaveLength(1);
+    expect((takes[0]!.shots as unknown[])).toHaveLength(1);
+    await expect(projects.importCapturedTake(project.id, 2, "scene-player", captured)).rejects.toMatchObject({ code: "revision_conflict" });
+    await expect(projects.importCapturedTake(project.id, 3, "missing", captured)).rejects.toMatchObject({ code: "invalid_request" });
   });
 
   it("limits sidecar cancellation to the owning session and recovers interrupted jobs", async () => {
