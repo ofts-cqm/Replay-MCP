@@ -39039,6 +39039,20 @@ var instance = { instance_id: external_exports.uuid().optional().describe("Targe
 var loose = external_exports.object(instance).catchall(external_exports.unknown());
 var requestId = external_exports.string().min(1).max(128).optional();
 var timeout = external_exports.number().int().min(250).max(3e5).optional();
+var gameAction = external_exports.object({ kind: external_exports.string().regex(/^[a-z][a-z0-9_]*$/) }).catchall(external_exports.unknown()).superRefine((action, context) => {
+  if (action.kind !== "navigate_to") return;
+  for (const coordinate of ["x", "y", "z"]) {
+    if (typeof action[coordinate] !== "number" || !Number.isFinite(action[coordinate])) {
+      context.addIssue({ code: "custom", path: [coordinate], message: `${coordinate} must be a finite number` });
+    }
+  }
+  if (action.tolerance !== void 0 && (typeof action.tolerance !== "number" || !Number.isFinite(action.tolerance) || action.tolerance < 0.25 || action.tolerance > 4)) {
+    context.addIssue({ code: "custom", path: ["tolerance"], message: "tolerance must be between 0.25 and 4.0" });
+  }
+  if (action.sprint !== void 0 && typeof action.sprint !== "boolean") {
+    context.addIssue({ code: "custom", path: ["sprint"], message: "sprint must be a boolean" });
+  }
+});
 var READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 var GAME_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true };
 var MUTATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
@@ -39236,7 +39250,7 @@ function registerTools(server, runtime) {
     inputSchema: external_exports.object({
       ...instance,
       request_id: requestId,
-      actions: external_exports.array(external_exports.record(external_exports.string(), external_exports.unknown())).min(1).max(128),
+      actions: external_exports.array(gameAction).min(1).max(128),
       on_failure: external_exports.enum(["stop", "continue"]).default("stop"),
       capture: external_exports.enum(["none", "after", "checkpoints", "after_and_on_failure"]).default("none"),
       timeout_ms: timeout

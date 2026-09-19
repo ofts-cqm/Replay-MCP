@@ -6,6 +6,8 @@
   {"schema": "lease.schema.json", "value": {"lease_id": "short", "fence": 0, "owner_label": "", "expires_at": "tomorrow"}},
   {"schema": "status.schema.json", "value": {"runtime_mode": "unknown", "lease_policy": {"ttl_ms": 1000}}},
   {"schema": "action.schema.json", "value": {"request_id": "", "actions": []}},
+  {"schema": "action.schema.json", "value": {"request_id": "navigate-missing", "actions": [{"kind": "navigate_to", "x": 1, "y": 64}]}},
+  {"schema": "action.schema.json", "value": {"request_id": "navigate-tolerance", "actions": [{"kind": "navigate_to", "x": 1, "y": 64, "z": 1, "tolerance": 8}]}},
   {"schema": "timeline.schema.json", "value": {"revision": "", "tracks": []}},
   {"schema": "render.schema.json", "value": {"job_id": "", "status": "done", "progress": 2}}
 ]

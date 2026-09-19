@@ -59,6 +59,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private final Minecraft minecraft = Minecraft.getInstance();
+    private final GroundNavigationPlanner navigation = new GroundNavigationPlanner(minecraft);
     private final ArtifactStore artifacts;
     private final net.ofts.replay_mcp.config.ReplayMcpConfig config;
     private final Set<KeyMapping> held = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -138,6 +139,15 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         result.addProperty("normal_input", true); result.addProperty("structured_observation", true);
         result.addProperty("framebuffer_capture", true); result.addProperty("clean_capture", true); result.addProperty("annotated_capture", true); result.addProperty("native_timeline", true);
         result.addProperty("native_fov", false); result.addProperty("native_look_at", false); result.addProperty("sidecar_editorial_tracks", false);
+        JsonObject navigationCapability = new JsonObject();
+        navigationCapability.addProperty("ground", true);
+        navigationCapability.addProperty("engine", "minecraft_walk_node_evaluator");
+        navigationCapability.addProperty("loaded_chunks_only", true);
+        navigationCapability.addProperty("max_distance", GroundNavigationPlanner.MAX_DISTANCE);
+        JsonArray unsupportedTravelModes = new JsonArray();
+        unsupportedTravelModes.add("swimming"); unsupportedTravelModes.add("flight"); unsupportedTravelModes.add("vehicles");
+        navigationCapability.add("unsupported_travel_modes", unsupportedTravelModes);
+        result.add("navigation", navigationCapability);
         result.addProperty("time_precision_us", 1_000);
         return result;
     }
@@ -429,7 +439,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         String kind = action.get("kind").getAsString().toLowerCase();
         JsonObject progress = new JsonObject(); progress.addProperty("step", batch.index); progress.addProperty("kind", kind); progress.addProperty("status", "started"); events.publish("action.progress", progress);
         int ticks = Math.max(1, action.has("ticks") ? action.get("ticks").getAsInt() :
-                Set.of("wait_until", "fly_to", "land", "break_block").contains(kind) ? Math.max(1, (action.has("timeout_ms") ? action.get("timeout_ms").getAsInt() : 30_000) / 50) : 1);
+                Set.of("wait_until", "navigate_to", "fly_to", "land", "break_block").contains(kind) ? Math.max(1, (action.has("timeout_ms") ? action.get("timeout_ms").getAsInt() : 30_000) / 50) : 1);
         switch (kind) {
             case "look" -> { batch.startYaw = minecraft.player.getYRot(); batch.startPitch = minecraft.player.getXRot(); batch.targetYaw = action.get("yaw").getAsFloat(); batch.targetPitch = action.get("pitch").getAsFloat(); batch.totalTicks = batch.remainingTicks = ticks; }
             case "turn" -> { batch.startYaw = minecraft.player.getYRot(); batch.startPitch = minecraft.player.getXRot(); batch.targetYaw = batch.startYaw + action.get("yaw").getAsFloat(); batch.targetPitch = batch.startPitch + action.get("pitch").getAsFloat(); batch.totalTicks = batch.remainingTicks = ticks; }
@@ -437,13 +447,16 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             case "look_at_entity" -> lookAt(resolveEntity(action).getEyePosition());
             case "look_at_block" -> lookAt(Vec3.atCenterOf(resolveBlock(action)));
             case "move" -> { axis(action); batch.remainingTicks = ticks; }
+            case "navigate_to" -> { batch.remainingTicks = ticks; startNavigation(batch, action); }
             case "jump" -> { set(minecraft.options.keyJump, true); batch.remainingTicks = ticks; }
             case "sprint" -> { set(minecraft.options.keySprint, true); batch.remainingTicks = ticks; }
             case "sneak" -> { set(minecraft.options.keyShift, true); batch.remainingTicks = ticks; }
-            case "swim", "fly_move" -> { axis(action); set(minecraft.options.keyJump, action.has("vertical") && action.get("vertical").getAsFloat() > 0); set(minecraft.options.keyShift, action.has("vertical") && action.get("vertical").getAsFloat() < 0); batch.remainingTicks = ticks; }
-            case "fly_to" -> { if (!minecraft.player.getAbilities().mayfly) throw new BridgeException(BridgeError.POLICY_DENIED, "flight is not granted"); lookAt(new Vec3(action.get("x").getAsDouble(), action.get("y").getAsDouble(), action.get("z").getAsDouble())); set(minecraft.options.keyUp, true); double dy = action.get("y").getAsDouble() - minecraft.player.getY(); set(minecraft.options.keyJump, dy > 1); set(minecraft.options.keyShift, dy < -1); batch.remainingTicks = ticks; }
-            case "ascend" -> { set(minecraft.options.keyJump, true); batch.remainingTicks = ticks; }
-            case "descend", "land" -> { set(minecraft.options.keyShift, true); batch.remainingTicks = ticks; }
+            case "swim" -> { axis(action); set(minecraft.options.keyJump, action.has("vertical") && action.get("vertical").getAsFloat() > 0); set(minecraft.options.keyShift, action.has("vertical") && action.get("vertical").getAsFloat() < 0); batch.remainingTicks = ticks; }
+            case "fly_move" -> { requireFlying(); axis(action); set(minecraft.options.keyJump, action.has("vertical") && action.get("vertical").getAsFloat() > 0); set(minecraft.options.keyShift, action.has("vertical") && action.get("vertical").getAsFloat() < 0); batch.remainingTicks = ticks; }
+            case "fly_to" -> { requireFlying(); lookAt(new Vec3(action.get("x").getAsDouble(), action.get("y").getAsDouble(), action.get("z").getAsDouble())); set(minecraft.options.keyUp, true); double dy = action.get("y").getAsDouble() - minecraft.player.getY(); set(minecraft.options.keyJump, dy > 1); set(minecraft.options.keyShift, dy < -1); batch.remainingTicks = ticks; }
+            case "ascend" -> { requireFlying(); set(minecraft.options.keyJump, true); batch.remainingTicks = ticks; }
+            case "descend" -> { requireFlying(); set(minecraft.options.keyShift, true); batch.remainingTicks = ticks; }
+            case "land" -> { if (minecraft.player.getAbilities().flying) set(minecraft.options.keyShift, true); batch.remainingTicks = ticks; }
             case "attack" -> { if (action.has("target_id")) minecraft.gameMode.attack(minecraft.player, resolveEntity(action)); else { set(minecraft.options.keyAttack, true); batch.remainingTicks = ticks; } }
             case "use" -> { if (action.has("state") && action.get("state").getAsString().equals("release")) set(minecraft.options.keyUse, false); else { set(minecraft.options.keyUse, true); batch.remainingTicks = ticks; } }
             case "interact_entity", "mount" -> { Entity entity = resolveEntity(action); minecraft.gameMode.interact(minecraft.player, entity, new EntityHitResult(entity), hand(action)); }
@@ -451,7 +464,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             case "place_or_use_item" -> { if (hasBlock(action)) { BlockPos pos = resolveBlock(action); Direction side = direction(action); minecraft.gameMode.useItemOn(minecraft.player, hand(action), new BlockHitResult(Vec3.atCenterOf(pos), side, pos, false)); } else minecraft.gameMode.useItem(minecraft.player, hand(action)); }
             case "wait_ticks" -> batch.remainingTicks = action.get("ticks").getAsInt();
             case "wait_until" -> { if (!condition(action)) batch.remainingTicks = ticks; }
-            case "set_flying" -> { if (!minecraft.player.getAbilities().mayfly) throw new BridgeException(BridgeError.POLICY_DENIED, "flight is not granted"); minecraft.player.getAbilities().flying = action.get("enabled").getAsBoolean(); }
+            case "set_flying" -> setFlying(action.get("enabled").getAsBoolean());
             case "pick_block" -> tap(minecraft.options.keyPickItem);
             case "swap_offhand" -> tap(minecraft.options.keySwapOffhand);
             case "drop_item" -> tap(minecraft.options.keyDrop);
@@ -481,6 +494,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             minecraft.player.setYRot(batch.startYaw + (batch.targetYaw - batch.startYaw) * progress);
             minecraft.player.setXRot(Math.max(-90, Math.min(90, batch.startPitch + (batch.targetPitch - batch.startPitch) * progress)));
         } else if (kind.equals("wait_until") && condition(batch.current)) batch.remainingTicks = 1;
+        else if (kind.equals("navigate_to")) updateNavigation(batch);
         else if (kind.equals("fly_to")) {
             Vec3 target = new Vec3(batch.current.get("x").getAsDouble(), batch.current.get("y").getAsDouble(), batch.current.get("z").getAsDouble());
             double tolerance = batch.current.has("tolerance") ? batch.current.get("tolerance").getAsDouble() : 1.0;
@@ -488,6 +502,98 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             else { lookAt(target); double dy = target.y - minecraft.player.getY(); set(minecraft.options.keyJump, dy > tolerance); set(minecraft.options.keyShift, dy < -tolerance); }
         } else if (kind.equals("land") && minecraft.player.onGround()) batch.remainingTicks = 1;
         else if (kind.equals("break_block") && minecraft.level.getBlockState(resolveBlock(batch.current)).isAir()) batch.remainingTicks = 1;
+    }
+
+    private void startNavigation(PendingBatch batch, JsonObject action) {
+        batch.navigationTarget = new Vec3(action.get("x").getAsDouble(), action.get("y").getAsDouble(), action.get("z").getAsDouble());
+        batch.navigationTolerance = action.has("tolerance") ? action.get("tolerance").getAsDouble() : 1.0;
+        batch.navigationSprint = action.has("sprint") && action.get("sprint").getAsBoolean();
+        batch.navigationReplans = 0; batch.navigationNodeCount = 0; batch.navigationStuckTicks = 0; batch.navigationSettleTicks = 0;
+        batch.navigationLastProgressPosition = minecraft.player.position();
+        if (navigationReached(batch)) { batch.remainingTicks = 1; return; }
+        installNavigationPlan(batch, false);
+    }
+
+    private void updateNavigation(PendingBatch batch) {
+        if (navigationWithinTolerance(batch)) {
+            if (hasNextContinuousMovementStep(batch) && minecraft.player.onGround()) {
+                batch.remainingTicks = 1;
+                return;
+            }
+            releaseHeld();
+            if (minecraft.player.onGround()) {
+                if (++batch.navigationSettleTicks >= GroundNavigationPlanner.ARRIVAL_SETTLE_TICKS) batch.remainingTicks = 1;
+            } else batch.navigationSettleTicks = 0;
+            return;
+        }
+        batch.navigationSettleTicks = 0;
+        if (minecraft.player.isInWater() || minecraft.player.isInLava()) {
+            throw GroundNavigationPlanner.conflict("unsupported_terrain", "ground navigation entered unsupported fluid terrain");
+        }
+        Vec3 position = minecraft.player.position();
+        if (position.distanceTo(batch.navigationLastProgressPosition) >= 0.25) {
+            batch.navigationLastProgressPosition = position; batch.navigationStuckTicks = 0;
+        } else if (++batch.navigationStuckTicks >= GroundNavigationPlanner.STUCK_TICKS) {
+            installNavigationPlan(batch, true);
+        }
+
+        net.minecraft.world.level.pathfinder.Path path = batch.navigationPlan.path();
+        while (!path.isDone() && waypointReached(position, waypoint(path))) {
+            path.advance();
+            publishNavigationProgress(batch, "waypoint_reached");
+        }
+        if (navigationReached(batch)) { releaseHeld(); batch.remainingTicks = 1; return; }
+        Vec3 waypoint = path.isDone() ? batch.navigationTarget : waypoint(path);
+        lookAtGround(waypoint);
+        set(minecraft.options.keyUp, true);
+        set(minecraft.options.keySprint, batch.navigationSprint);
+        boolean shouldJump = minecraft.player.onGround()
+                && (waypoint.y > minecraft.player.getY() + 0.4 || minecraft.player.horizontalCollision);
+        set(minecraft.options.keyJump, shouldJump);
+    }
+
+    private void installNavigationPlan(PendingBatch batch, boolean replan) {
+        if (replan && batch.navigationReplans >= GroundNavigationPlanner.MAX_REPLANS) {
+            throw GroundNavigationPlanner.conflict("stuck", "ground navigation exhausted its replan limit");
+        }
+        batch.navigationPlan = navigation.plan(batch.navigationTarget, batch.navigationTolerance);
+        if (replan) batch.navigationReplans++;
+        if (batch.navigationNodeCount == 0) batch.navigationNodeCount = batch.navigationPlan.path().getNodeCount();
+        batch.navigationLastProgressPosition = minecraft.player.position(); batch.navigationStuckTicks = 0;
+        publishNavigationProgress(batch, replan ? "replanned" : "planned");
+    }
+
+    private void publishNavigationProgress(PendingBatch batch, String status) {
+        JsonObject progress = new JsonObject(); progress.addProperty("step", batch.index); progress.addProperty("kind", "navigate_to");
+        progress.addProperty("status", status); progress.addProperty("waypoint_index", batch.navigationPlan.path().getNextNodeIndex());
+        progress.addProperty("waypoint_count", batch.navigationPlan.path().getNodeCount()); progress.addProperty("replans", batch.navigationReplans);
+        progress.add("player_position", vector(minecraft.player.position())); events.publish("action.progress", progress);
+    }
+
+    private boolean navigationReached(PendingBatch batch) {
+        return minecraft.player.onGround() && navigationWithinTolerance(batch);
+    }
+
+    private boolean navigationWithinTolerance(PendingBatch batch) {
+        return batch.navigationTarget != null && minecraft.player.position().distanceTo(batch.navigationTarget) <= batch.navigationTolerance;
+    }
+
+    private static boolean waypointReached(Vec3 position, Vec3 waypoint) {
+        double dx = position.x - waypoint.x, dz = position.z - waypoint.z;
+        return dx * dx + dz * dz <= 0.45 * 0.45 && Math.abs(position.y - waypoint.y) <= 1.25;
+    }
+
+    private static Vec3 waypoint(net.minecraft.world.level.pathfinder.Path path) {
+        var node = path.getNextNode(); return new Vec3(node.x + 0.5, node.y, node.z + 0.5);
+    }
+
+    private void lookAtGround(Vec3 target) {
+        Vec3 origin = minecraft.player.position(); double dx = target.x - origin.x, dz = target.z - origin.z;
+        if (Math.abs(dx) + Math.abs(dz) > 1.0e-6) minecraft.player.setYRot((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90));
+    }
+
+    private static JsonObject vector(Vec3 value) {
+        JsonObject result = new JsonObject(); result.addProperty("x", value.x); result.addProperty("y", value.y); result.addProperty("z", value.z); return result;
     }
 
     private boolean condition(JsonObject action) {
@@ -526,9 +632,11 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private void finishStep(PendingBatch batch) {
-        releaseHeld();
         String kind = batch.current.get("kind").getAsString().toLowerCase(java.util.Locale.ROOT);
+        boolean continueMovement = kind.equals("navigate_to") && hasNextContinuousMovementStep(batch);
+        if (!continueMovement) releaseHeld();
         if (kind.equals("wait_until") && !condition(batch.current)) throw new BridgeException(BridgeError.TIMEOUT, "wait condition was not met");
+        if (kind.equals("navigate_to") && !navigationReached(batch)) throw GroundNavigationPlanner.conflict("stuck", "navigation target was not reached");
         if (kind.equals("fly_to")) {
             Vec3 target = new Vec3(batch.current.get("x").getAsDouble(), batch.current.get("y").getAsDouble(), batch.current.get("z").getAsDouble());
             double tolerance = batch.current.has("tolerance") ? batch.current.get("tolerance").getAsDouble() : 1.0;
@@ -540,9 +648,28 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         JsonObject trace = new JsonObject(); trace.addProperty("kind", batch.current.get("kind").getAsString()); trace.addProperty("status", "completed");
         trace.addProperty("start_tick", batch.stepStartTick); trace.addProperty("end_tick", gameTick());
         if (minecraft.player != null) { JsonObject position = new JsonObject(); position.addProperty("x", minecraft.player.getX()); position.addProperty("y", minecraft.player.getY()); position.addProperty("z", minecraft.player.getZ()); trace.add("player_position", position); }
+        if (kind.equals("navigate_to")) {
+            JsonObject navigationTrace = new JsonObject();
+            navigationTrace.add("target", vector(batch.navigationTarget));
+            navigationTrace.addProperty("native_node_count", batch.navigationNodeCount);
+            navigationTrace.addProperty("replans", batch.navigationReplans);
+            navigationTrace.addProperty("reached", true);
+            trace.add("navigation", navigationTrace);
+        }
         if (batch.current.get("kind").getAsString().equalsIgnoreCase("checkpoint")) trace.add("snapshot", snapshot());
         if (batch.current.has("label")) trace.add("label", batch.current.get("label")); batch.trace.add(trace); batch.index++; batch.current = null;
         JsonObject progress = new JsonObject(); progress.addProperty("step", batch.index - 1); progress.addProperty("status", "completed"); events.publish("action.progress", progress);
+        if (continueMovement) {
+            beginStep(batch, batch.actions.get(batch.index).getAsJsonObject());
+            if (batch.current.get("kind").getAsString().equalsIgnoreCase("navigate_to")) updateNavigation(batch);
+        }
+    }
+
+    private boolean hasNextContinuousMovementStep(PendingBatch batch) {
+        int nextIndex = batch.index + 1;
+        if (nextIndex >= batch.actions.size()) return false;
+        String kind = batch.actions.get(nextIndex).getAsJsonObject().get("kind").getAsString();
+        return kind.equalsIgnoreCase("navigate_to") || kind.equalsIgnoreCase("move");
     }
 
     private void completeBatch(PendingBatch batch) {
@@ -552,11 +679,12 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         releaseHeld();
         if (batch.continueOnFailure && batch.current != null) {
             JsonObject trace = new JsonObject(); trace.addProperty("kind", batch.current.get("kind").getAsString()); trace.addProperty("status", "failed"); trace.addProperty("error", failure.error().wireName()); trace.addProperty("message", failure.getMessage());
+            trace.add("data", failure.data());
             trace.addProperty("start_tick", batch.stepStartTick); trace.addProperty("end_tick", gameTick()); batch.trace.add(trace);
             JsonObject event = trace.deepCopy(); event.addProperty("step", batch.index); events.publish("action.failed", event);
             batch.index++; batch.current = null; batch.remainingTicks = 0; return;
         }
-        JsonObject event = new JsonObject(); event.addProperty("step", batch.index); event.addProperty("error", failure.error().wireName()); event.addProperty("message", failure.getMessage()); events.publish("action.failed", event);
+        JsonObject event = new JsonObject(); event.addProperty("step", batch.index); event.addProperty("error", failure.error().wireName()); event.addProperty("message", failure.getMessage()); event.add("data", failure.data()); events.publish("action.failed", event);
         pendingBatch = null; batch.result.completeExceptionally(failure);
     }
     private void releaseHeld() { held.forEach(key -> key.setDown(false)); held.clear(); }
@@ -565,6 +693,8 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private static final class PendingBatch {
         final JsonArray actions; final CancellationToken token; final long deadlineNanos; final boolean continueOnFailure; final CompletableFuture<JsonObject> result = new CompletableFuture<>(); final JsonArray trace = new JsonArray();
         int index, remainingTicks, totalTicks; long stepStartTick, stepDeadlineNanos; JsonObject current; float startYaw, startPitch, targetYaw, targetPitch;
+        GroundNavigationPlanner.Plan navigationPlan; Vec3 navigationTarget, navigationLastProgressPosition;
+        double navigationTolerance; boolean navigationSprint; int navigationReplans, navigationNodeCount, navigationStuckTicks, navigationSettleTicks;
         PendingBatch(JsonArray actions, CancellationToken token, long deadlineNanos, boolean continueOnFailure) { this.actions = actions; this.token = token; this.deadlineNanos = deadlineNanos; this.continueOnFailure = continueOnFailure; }
     }
 
@@ -573,6 +703,24 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         double horizontal = Math.sqrt(dx * dx + dz * dz);
         minecraft.player.setYRot((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90));
         minecraft.player.setXRot((float) -Math.toDegrees(Math.atan2(dy, horizontal)));
+    }
+
+    private void setFlying(boolean enabled) {
+        if (enabled && !minecraft.player.getAbilities().mayfly) {
+            throw new BridgeException(BridgeError.POLICY_DENIED, "flight is not granted");
+        }
+        minecraft.player.getAbilities().flying = enabled;
+        if (enabled && minecraft.player.onGround()) minecraft.player.jumpFromGround();
+        minecraft.player.onUpdateAbilities();
+    }
+
+    private void requireFlying() {
+        if (!minecraft.player.getAbilities().mayfly) {
+            throw new BridgeException(BridgeError.POLICY_DENIED, "flight is not granted");
+        }
+        if (!minecraft.player.getAbilities().flying) {
+            throw new BridgeException(BridgeError.INVALID_MODE, "flight is not enabled; use set_flying first");
+        }
     }
 
     private Entity resolveEntity(JsonObject action) {

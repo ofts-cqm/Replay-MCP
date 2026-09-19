@@ -13,6 +13,21 @@ const instance = { instance_id: z.uuid().optional().describe("Target instance; o
 const loose = z.object(instance).catchall(z.unknown());
 const requestId = z.string().min(1).max(128).optional();
 const timeout = z.number().int().min(250).max(300_000).optional();
+const gameAction = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]*$/) }).catchall(z.unknown()).superRefine((action, context) => {
+  if (action.kind !== "navigate_to") return;
+  for (const coordinate of ["x", "y", "z"] as const) {
+    if (typeof action[coordinate] !== "number" || !Number.isFinite(action[coordinate])) {
+      context.addIssue({ code: "custom", path: [coordinate], message: `${coordinate} must be a finite number` });
+    }
+  }
+  if (action.tolerance !== undefined && (typeof action.tolerance !== "number" || !Number.isFinite(action.tolerance)
+      || action.tolerance < 0.25 || action.tolerance > 4.0)) {
+    context.addIssue({ code: "custom", path: ["tolerance"], message: "tolerance must be between 0.25 and 4.0" });
+  }
+  if (action.sprint !== undefined && typeof action.sprint !== "boolean") {
+    context.addIssue({ code: "custom", path: ["sprint"], message: "sprint must be a boolean" });
+  }
+});
 
 const READ: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const GAME_READ: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true };
@@ -186,7 +201,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   server.registerTool("game_perform", {
     title: "Perform normal game actions", description: "Execute an audited ordered action batch with guaranteed synthetic-input release.",
     inputSchema: z.object({
-      ...instance, request_id: requestId, actions: z.array(z.record(z.string(), z.unknown())).min(1).max(128),
+      ...instance, request_id: requestId, actions: z.array(gameAction).min(1).max(128),
       on_failure: z.enum(["stop", "continue"]).default("stop"), capture: z.enum(["none", "after", "checkpoints", "after_and_on_failure"]).default("none"),
       timeout_ms: timeout,
     }), annotations: MUTATE,

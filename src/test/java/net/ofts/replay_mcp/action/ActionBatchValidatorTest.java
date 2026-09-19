@@ -27,6 +27,17 @@ class ActionBatchValidatorTest {
         assertEquals(BridgeError.POLICY_DENIED, assertThrows(BridgeException.class, () -> validator.validate(request(action("fly_to")), false)).error());
     }
 
+    @Test void navigationRequiresFiniteCoordinatesAndBoundedTolerance() {
+        ReplayMcpConfig config = new ReplayMcpConfig(); ActionBatchValidator validator = new ActionBatchValidator(ProtocolLimits.defaults(), config);
+        JsonObject navigate = action("navigate_to"); navigate.addProperty("x", 10.5); navigate.addProperty("y", 64); navigate.addProperty("z", -4.5);
+        assertEquals(1, validator.validate(request(navigate), false).size());
+
+        navigate.addProperty("tolerance", 0.1);
+        assertEquals(BridgeError.INVALID_REQUEST, assertThrows(BridgeException.class, () -> validator.validate(request(navigate), false)).error());
+        navigate.addProperty("tolerance", 1.0); navigate.remove("z");
+        assertEquals(BridgeError.INVALID_REQUEST, assertThrows(BridgeException.class, () -> validator.validate(request(navigate), false)).error());
+    }
+
     private static JsonObject action(String kind) { JsonObject a = new JsonObject(); a.addProperty("kind", kind); return a; }
     private static JsonObject request(JsonObject action) { JsonObject r = new JsonObject(); r.addProperty("request_id", "r"); JsonArray a = new JsonArray(); a.add(action); r.add("actions", a); return r; }
 }

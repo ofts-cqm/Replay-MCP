@@ -10,7 +10,27 @@
     "instance_id": {"type": "string", "format": "uuid"},
     "process_id": {"type": "integer", "minimum": 1},
     "runtime_mode": {"enum": ["game_offline", "live_idle", "live_recording", "replay_loading", "replay_loaded", "rendering"]},
-    "capabilities": {"type": "object"},
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "navigation": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["ground", "engine", "loaded_chunks_only", "max_distance", "unsupported_travel_modes"],
+          "properties": {
+            "ground": {"type": "boolean"},
+            "engine": {"const": "minecraft_walk_node_evaluator"},
+            "loaded_chunks_only": {"type": "boolean"},
+            "max_distance": {"type": "number", "exclusiveMinimum": 0},
+            "unsupported_travel_modes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"enum": ["swimming", "flight", "vehicles"]}
+            }
+          }
+        }
+      }
+    },
     "lease": {
       "type": "object",
       "required": ["held", "epoch"],

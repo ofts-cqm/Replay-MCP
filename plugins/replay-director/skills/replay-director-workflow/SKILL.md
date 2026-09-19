@@ -30,6 +30,10 @@ until the corresponding result or job says it completed.
 - Work in bounded observe-act-verify loops. Send small ordered
   `game_perform` batches with explicit postconditions and useful checkpoints;
   observe again after movement, commands, interaction, or a scene transition.
+- When `capabilities.navigation.ground` is available, prefer bounded
+  `navigate_to` actions for fixed-coordinate ground travel. Keep targets inside
+  loaded terrain, observe after arrival, and fall back to short manual movement
+  batches when the planner reports unsupported terrain or no path.
 - Treat physical-input override, lease loss, disconnect, timeout, and stale
   fencing as terminal for the current control session. Do not automatically
   reacquire or replay a mutation.

@@ -44,6 +44,7 @@ public final class ActionBatchValidator {
                 int slot = requiredInt(action, "slot");
                 if (slot < 1 || slot > 9) throw invalid("hotbar slot must be 1 through 9");
             }
+            if (kind == ActionKind.NAVIGATE_TO) validateNavigation(action);
             if (kind == ActionKind.WAIT_TICKS && (requiredInt(action, "ticks") < 0 || requiredInt(action, "ticks") > 12_000)) {
                 throw invalid("wait_ticks is out of bounds");
             }
@@ -63,6 +64,20 @@ public final class ActionBatchValidator {
         }
     }
 
+    private static void validateNavigation(JsonObject action) {
+        requiredFinite(action, "x");
+        requiredFinite(action, "y");
+        requiredFinite(action, "z");
+        if (action.has("tolerance")) {
+            double tolerance = requiredFinite(action, "tolerance");
+            if (tolerance < 0.25 || tolerance > 4.0) throw invalid("navigation tolerance must be between 0.25 and 4.0");
+        }
+        if (action.has("sprint") && (!action.get("sprint").isJsonPrimitive()
+                || !action.get("sprint").getAsJsonPrimitive().isBoolean())) {
+            throw invalid("navigation sprint must be a boolean");
+        }
+    }
+
     private static boolean isFlight(ActionKind kind) {
         return switch (kind) {
             case SET_FLYING, FLY_MOVE, FLY_TO, ASCEND, DESCEND, LAND -> true;
@@ -73,6 +88,14 @@ public final class ActionBatchValidator {
     private static int requiredInt(JsonObject object, String name) {
         if (!object.has(name)) throw invalid(name + " is required");
         return object.get(name).getAsInt();
+    }
+
+    private static double requiredFinite(JsonObject object, String name) {
+        if (!object.has(name) || !object.get(name).isJsonPrimitive()
+                || !object.get(name).getAsJsonPrimitive().isNumber()) throw invalid(name + " must be a number");
+        double value = object.get(name).getAsDouble();
+        if (!Double.isFinite(value)) throw invalid(name + " must be finite");
+        return value;
     }
 
     private static BridgeException invalid(String message) { return new BridgeException(BridgeError.INVALID_REQUEST, message); }

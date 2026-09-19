@@ -19,7 +19,25 @@
           "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
           "timeout_ms": {"type": "integer", "minimum": 1},
           "label": {"type": "string", "maxLength": 256}
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"kind": {"const": "navigate_to"}},
+              "required": ["kind"]
+            },
+            "then": {
+              "required": ["x", "y", "z"],
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "z": {"type": "number"},
+                "tolerance": {"type": "number", "minimum": 0.25, "maximum": 4.0},
+                "sprint": {"type": "boolean"}
+              }
+            }
+          }
+        ]
       }
     },
     "on_failure": {"enum": ["stop", "continue"]},

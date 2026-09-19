@@ -40,7 +40,13 @@ describe("in-process MCP filmmaking workflow", () => {
     expect(tools.tools).toHaveLength(38);
     expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(38);
 
-    expect(structured(await call(client, "system_status", {})).state).toBe("online");
+    const online = structured(await call(client, "system_status", {}));
+    expect(online.state).toBe("online");
+    const [onlineInstance] = online.instances as Record<string, unknown>[];
+    expect(onlineInstance).toBeDefined();
+    expect(((onlineInstance!.capabilities as Record<string, unknown>).navigation as Record<string, unknown>)).toMatchObject({ ground: true, engine: "minecraft_walk_node_evaluator", max_distance: 128 });
+    const invalidNavigation = await client.callTool({ name: "game_perform", arguments: { actions: [{ kind: "navigate_to", x: 1, y: 64 }] } });
+    expect(invalidNavigation.isError).toBe(true);
     expect(structured(await call(client, "control_acquire", {})).lease_id).toBeTypeOf("string");
     const observation = await call(client, "game_observe", { view: "annotated" });
     expect(observation.content.some((block) => block.type === "image")).toBe(true);
@@ -50,6 +56,8 @@ describe("in-process MCP filmmaking workflow", () => {
     expect(ephemeral.persisted).toBe(false);
     expect((structured(await call(client, "artifact_list", {})).artifacts as unknown[]).length).toBe(persistedBefore);
     expect(structured(await call(client, "game_query", { kind: "player" })).result).toMatchObject({ x: 1, y: 64, z: 2 });
+    const navigated = structured(await call(client, "game_perform", { actions: [{ kind: "navigate_to", x: 8.5, y: 64, z: 2.5, tolerance: 1, sprint: false }] }));
+    expect(((navigated.result as Record<string, unknown>).trace as Record<string, unknown>[])[0]).toMatchObject({ kind: "navigate_to", navigation: { reached: true } });
     const performed = await call(client, "game_perform", { actions: [{ kind: "turn", yaw: 10, pitch: 0 }], capture: "after" });
     expect((structured(performed).result as Record<string, unknown>).trace).toBeDefined();
     expect(performed.content.some((block) => block.type === "image")).toBe(true);

@@ -79,7 +79,11 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
         case "observation.framebuffer": success({ ...artifact(pngPath, png, "image/png"), view: params.view ?? "player", capture_tick: 80, snapshot: { synchronized: true, tick: 80, player: { x: 1, y: 64, z: 2 } } }); break;
         case "observation.motion_burst": success({ requested_frames: params.frames ?? 2, dropped_frames: 0, view: params.view ?? "clean", frames: [artifact(pngPath, png, "image/png")] }); break;
         case "observation.query": success({ kind: params.kind, tick: 80, player: { x: 1, y: 64, z: 2 } }); break;
-        case "action.start_batch": success({ trace: [{ kind: "turn", status: "completed" }], final_state: { tick: 81 } }); break;
+        case "action.start_batch": {
+          const actions = Array.isArray(params.actions) ? params.actions as Record<string, unknown>[] : [];
+          success({ trace: actions.map((action) => ({ kind: action.kind, status: "completed", ...(action.kind === "navigate_to" ? { navigation: { native_node_count: 4, replans: 0, reached: true } } : {}) })), final_state: { tick: 81 } });
+          break;
+        }
         case "recording.status": success({ armed: true, logical_recording: recording, duration_us: 1_000_000 }); break;
         case "recording.start": recording = true; success({ armed: true, logical_recording: true, take_id: params.take_id ?? "take-1" }); break;
         case "recording.marker": success({ success: true }); break;
@@ -128,7 +132,7 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
   function status(extra: Record<string, unknown> = {}) {
     return {
       minecraft_version: "26.2", replay_mod_version: "26.2-2.6.27", connected: true, runtime_mode: "live_idle",
-      capabilities: { structured_observation: true, framebuffer_capture: true, native_timeline: true, native_fov: false, native_look_at: false },
+      capabilities: { structured_observation: true, framebuffer_capture: true, native_timeline: true, native_fov: false, native_look_at: false, navigation: { ground: true, engine: "minecraft_walk_node_evaluator", loaded_chunks_only: true, max_distance: 128, unsupported_travel_modes: ["swimming", "flight", "vehicles"] } },
       lease: leaseOwner ? { held: true, epoch: fence, owner_label: "test" } : { held: false, epoch: fence },
       lease_policy: { ttl_ms: 15_000, heartbeat_interval_ms: 1_000, idle_ceiling_ms: 300_000 },
       command_policy: { enabled: false, locally_managed: true },

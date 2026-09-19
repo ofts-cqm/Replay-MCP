@@ -16,7 +16,7 @@ still pending.
 | --- | --- |
 | Fabric submod service graph and local human controls | **Implemented** |
 | Authenticated mod-to-sidecar bridge and discovery | **Implemented** |
-| Minecraft observation and normal-input action primitives | **Implemented** |
+| Minecraft observation, normal-input actions, and ground pathfinding | **Implemented** |
 | Replay Mod recording, replay, timeline, and render adapters | **Implemented** |
 | Public MCP tools, resources, jobs, and bridge client | **Implemented; automated acceptance passed** |
 | Production manifests and editor-neutral handoff | **Implemented; automated acceptance passed** |
@@ -376,11 +376,42 @@ disconnect, timeout, or error.
 | Action | Purpose |
 | --- | --- |
 | `move` | Hold forward/strafe axes for ticks or until a condition. |
+| `navigate_to` | Follow a Minecraft-planned ground route to a fixed coordinate using normal movement inputs. |
 | `jump` | Tap or hold jump. |
 | `sprint` | Set sprint input for a duration. |
 | `sneak` | Set sneak input for a duration. |
 | `swim` | Move in water with horizontal and vertical components. |
 | `stop_all_inputs` | Immediately release every agent-held input. |
+
+`navigate_to` requires finite `x`, `y`, and `z` coordinates. It accepts an
+optional `tolerance` from `0.25` to `4.0` blocks (default `1.0`) and optional
+`sprint` flag (default `false`). Targets are limited to the current dimension,
+loaded chunks, valid build height, and 128 blocks from the starting position.
+
+The Fabric submod plans with Minecraft's native `PathFinder`,
+`WalkNodeEvaluator`, `PathNavigationRegion`, and `Path` through a temporary,
+non-spawned humanoid mob proxy because the native API accepts `Mob` rather
+than `Player`. The real player is never replaced or teleported: Replay MCP
+steers, moves forward, sprints when requested, and jumps through normal client
+controls. Already-open wooden or iron doors are passable; closed doors remain
+blocked and are never opened by the controller. Fences, water, lava, hazardous
+nodes, vehicles, parkour, flight routing, and chunk loading are excluded from
+the ground planner.
+
+Navigation replans when progress is blocked, up to three times, and reports
+waypoint/replan progress through `action.progress`. Its final action trace
+includes the target, native node count, replan count, reached position, and
+completion state. Planning failures use `conflict` with a structured reason
+such as `no_path`, `outside_loaded_area`, `unsupported_terrain`,
+`target_out_of_range`, or `stuck`. Cancellation, timeout, lease loss, human
+override, disconnect, and emergency stop release every held input and discard
+the active route.
+
+Consecutive `navigate_to` or `move` actions in one batch are a continuous
+movement chain. The client starts the next step in the same tick without
+releasing movement input or applying the final four-tick settle delay between
+waypoints. Input release and grounded settling still apply at the end of the
+chain and on every failure, cancellation, or non-movement transition.
 
 ##### Creative and spectator flight
 
@@ -1093,7 +1124,6 @@ Not included in the core:
 
 Potential later extensions:
 
-- pathfinding-assisted `navigate_to` built above normal inputs;
 - multi-client actor coordination;
 - voice, lip-sync, and dialogue cue tracks;
 - automatic highlight and continuity analysis;

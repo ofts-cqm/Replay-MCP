@@ -36,11 +36,15 @@
   },
   {
     "schema": "status.schema.json",
-    "value": {"protocol": "replay-mcp.bridge/1", "instance_id": "11111111-1111-4111-8111-111111111111", "process_id": 4242, "runtime_mode": "live_idle", "capabilities": {}, "lease": {"held": false, "epoch": 0}, "lease_policy": {"ttl_ms": 15000, "heartbeat_interval_ms": 5000, "idle_ceiling_ms": 300000}, "command_policy": {"enabled": false, "locally_managed": true}, "flight_policy": {"automation_enabled": true, "requires_granted_ability": true, "currently_granted": false}, "allowed_artifact_roots": ["/tmp/minecraft/.replay-mcp/artifacts"]}
+    "value": {"protocol": "replay-mcp.bridge/1", "instance_id": "11111111-1111-4111-8111-111111111111", "process_id": 4242, "runtime_mode": "live_idle", "capabilities": {"navigation": {"ground": true, "engine": "minecraft_walk_node_evaluator", "loaded_chunks_only": true, "max_distance": 128, "unsupported_travel_modes": ["swimming", "flight", "vehicles"]}}, "lease": {"held": false, "epoch": 0}, "lease_policy": {"ttl_ms": 15000, "heartbeat_interval_ms": 5000, "idle_ceiling_ms": 300000}, "command_policy": {"enabled": false, "locally_managed": true}, "flight_policy": {"automation_enabled": true, "requires_granted_ability": true, "currently_granted": false}, "allowed_artifact_roots": ["/tmp/minecraft/.replay-mcp/artifacts"]}
   },
   {
     "schema": "action.schema.json",
     "value": {"request_id": "action-1", "actions": [{"kind": "turn", "yaw": 15, "pitch": 0}, {"kind": "wait_ticks", "ticks": 2}], "on_failure": "stop", "capture": "after", "lease_id": "01234567890123456789012345678901", "fence": 3}
+  },
+  {
+    "schema": "action.schema.json",
+    "value": {"request_id": "navigate-1", "actions": [{"kind": "navigate_to", "x": 12.5, "y": 64, "z": -8.5, "tolerance": 1.0, "sprint": false}], "on_failure": "stop", "lease_id": "01234567890123456789012345678901", "fence": 3}
   },
   {
     "schema": "timeline.schema.json",

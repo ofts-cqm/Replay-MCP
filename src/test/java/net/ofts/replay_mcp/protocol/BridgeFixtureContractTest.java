@@ -115,7 +115,19 @@ final class BridgeFixtureContractTest {
     private static void validateAction(JsonObject value) {
         requiredString(value, "request_id");
         if (!value.has("actions") || !value.get("actions").isJsonArray() || value.getAsJsonArray("actions").isEmpty()) throw new IllegalArgumentException();
-        for (JsonElement action : value.getAsJsonArray("actions")) requiredString(action.getAsJsonObject(), "kind");
+        for (JsonElement element : value.getAsJsonArray("actions")) {
+            JsonObject action = element.getAsJsonObject();
+            if (requiredString(action, "kind").equals("navigate_to")) {
+                for (String coordinate : new String[]{"x", "y", "z"}) {
+                    if (!action.has(coordinate) || !action.get(coordinate).isJsonPrimitive() || !action.get(coordinate).getAsJsonPrimitive().isNumber()) throw new IllegalArgumentException(coordinate);
+                }
+                if (action.has("tolerance")) {
+                    double tolerance = action.get("tolerance").getAsDouble();
+                    if (tolerance < 0.25 || tolerance > 4.0) throw new IllegalArgumentException("tolerance");
+                }
+                if (action.has("sprint") && !action.get("sprint").getAsJsonPrimitive().isBoolean()) throw new IllegalArgumentException("sprint");
+            }
+        }
     }
 
     private static void validateTimeline(JsonObject value) {
