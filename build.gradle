@@ -19,6 +19,12 @@ loom {
             sourceSet sourceSets.client
         }
     }
+
+    runs {
+        client {
+            programArgs(["--username", "OFTS_CQM"])
+        }
+    }
 }
 
 repositories {
