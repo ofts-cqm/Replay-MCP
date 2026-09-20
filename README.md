@@ -65,11 +65,12 @@ npm ci
 
 ```sh
 npm run build
-npm run bundle:plugin
+npm run package:plugin
 ```
 
-This compiles the Node.js MCP sidecar and creates the pinned plugin bundle at
-`plugins/replay-director/bin/`.
+This compiles the Node.js MCP sidecar and creates the complete, installable
+plugin at `plugins/replay-director/`. That directory is generated and ignored;
+the authored manifests and skills live in `plugins/replay-director-template/`.
 
 ### 3. Build the Fabric mod
 

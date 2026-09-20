@@ -35,7 +35,7 @@ node ./plugins/replay-director/bin/replay-mcp-server.mjs configure \
   --game-dir "/home/ofts/Replay MCP/run"
 ```
 
-`plugins/replay-director/LOCAL_TESTING.md` now documents this development setup,
+`plugins/replay-director-template/LOCAL_TESTING.md` now documents this development setup,
 including the sidecar restart requirement. No runtime source-code change was
 needed during this live pass.
 

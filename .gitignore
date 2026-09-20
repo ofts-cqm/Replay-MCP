@@ -1,11 +1,18 @@
 # MacOS DS_Store files
 .DS_Store
 
-# Gradle cache folder
-.gradle
+# Build output and dependency caches
+.gradle/
+**/build/
+**/dist/
+**/out/
+**/target/
+**/.cache/
+node_modules/
+packages/mcp-server/protocol/
 
-# Gradle build folder
-build
+# Generated, installable Replay Director plugin distribution
+/plugins/replay-director/
 
 # IntelliJ
 out/
@@ -17,11 +24,42 @@ out/
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 
-# Common working directory
-run
+# Test output and coverage (test source remains tracked)
+**/reports/
+**/test-results/
+**/coverage/
+**/.nyc_output/
+*.lcov
+*.coverage
+*.cover
 
-node_modules/
-packages/mcp-server/dist/
-packages/mcp-server/protocol/
+# Local runtime data, logs, and temporary test artifacts
+run/
+logs/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.vitest/
+**/tmp/
+**/temp/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*.orig
 
-tools/__pycache__
+# Local credentials and secrets; keep shareable templates explicitly named .example
+.env
+.env.*
+!.env.example
+!.env.*.example
+credentials/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

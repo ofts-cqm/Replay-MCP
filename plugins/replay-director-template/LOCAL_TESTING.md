@@ -1,16 +1,16 @@
 # Local Codex testing
 
-Build the pinned plugin bundle before installing the repo marketplace:
+Build the generated plugin distribution before installing the repo marketplace:
 
 ```sh
 npm run build
-npm run bundle:plugin
+npm run package:plugin
 codex plugin marketplace add "/home/ofts/Replay MCP"
 codex plugin add replay-director@replay-mcp-local
 ```
 
 Start a new Codex thread after reinstalling so the updated skill and tools are
-loaded. The plugin launches only the bundled `bin/replay-mcp-server.mjs` using
+loaded. The generated plugin launches only the bundled `bin/replay-mcp-server.mjs` using
 paths relative to the installed plugin root; it does not depend on host-side
 plugin variable expansion, `npx`, or a second source tree. Sidecar state uses
 the platform user-data directory by default and can be overridden with
