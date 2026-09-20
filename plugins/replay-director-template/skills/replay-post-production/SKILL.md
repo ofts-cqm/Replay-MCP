@@ -10,7 +10,8 @@ actions, locations, and capture beats into one timeline and one final video.
 Do not turn “record A, then B” into two masters.
 
 Read [Replay MCP operations](../replay-director-workflow/references/replay-mcp-operations.md)
-when the handoff still involves Replay MCP projects, jobs, or artifacts.
+for its mandatory production-memory and information boundaries. Also apply its
+project, job, and artifact contracts when the handoff still involves Replay MCP.
 
 ## Divide work at the right boundary
 
@@ -22,6 +23,8 @@ second polished master inside Replay Mod unless the user asks for it.
 
 Before importing, require:
 
+- the temporary request record and its absolute path; if absent or unreadable,
+  ask the user to restate or confirm the request before editing;
 - completed, checksum-verified shot artifacts;
 - project/scene/shot IDs and intended order;
 - frame rate, aspect ratio, resolution, and audio intent;
@@ -45,12 +48,17 @@ Before importing, require:
    footage unless the problem is inside a shot plate.
 7. Export the final master once the timeline is approved, follow the export job
    to completion, and inspect actual frames from the exported video.
+8. Reopen the request record and compare the completed export against every
+   applicable requirement. Append the post-production result and correct any
+   material mismatch before declaring the video finished.
 
-If permitted subagents are used, the replay-camera agent should be released
-after handing off verified shot plates and validation evidence. Post-production
-must not hold or reacquire Minecraft control unless it discovers a shot defect
-that genuinely requires returning to Replay; in that case finish the editor
-checkpoint first and start a new, single-controller Replay phase.
+Use a post-production subagent by default when supported. The replay-camera
+agent must first hand off the request-record path, verified shot plates, and
+validation evidence, then be released. If a governing restriction prevents
+required release, ask the user before continuing. Post-production must not hold
+or reacquire Minecraft control unless it discovers a shot defect that genuinely
+requires returning to Replay; in that case finish the editor checkpoint first
+and start a new, single-controller Replay phase.
 
 Report the master path, technical metadata, checksum when available, included
 scene order, and any unresolved visual or editorial warning. A project file or

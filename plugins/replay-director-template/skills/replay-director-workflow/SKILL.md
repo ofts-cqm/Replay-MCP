@@ -10,8 +10,9 @@ videos. “Record this, then record that” normally means multiple scenes in on
 final video, not one output per phrase.
 
 Read [Replay MCP operations](references/replay-mcp-operations.md) before using
-the tools. It is the deployed-agent reference for control, runtime contexts,
-recording finalization, jobs, and the public tool groups.
+the tools. Its production-memory and information boundaries are mandatory; it
+is also the deployed-agent reference for control, runtime contexts, recording
+finalization, jobs, and the public tool groups.
 
 ## Establish the production boundary
 
@@ -19,16 +20,19 @@ recording finalization, jobs, and the public tool groups.
    live. Check the runtime mode, policies, capabilities, and artifact roots.
 2. Create or open one project and translate the request into ordered scenes,
    shots, and a single intended deliverable.
-3. Select the applicable shot pattern:
+3. Create the temporary request record required by Replay MCP operations. Store
+   the initial request verbatim before scouting, keep its absolute path in every
+   checkpoint, and append later user-approved changes without rewriting it.
+4. Select the applicable shot pattern:
    - read [Minecraft player cinematography](../minecraft-player-cinematography/SKILL.md)
      for any player action or travel;
    - read [Minecraft building cinematography](../minecraft-building-cinematography/SKILL.md)
      for structures, interiors, landscapes, or environmental coverage; and
    - use both for a production that switches between subject and scene coverage.
-4. Default to third-person/free-camera coverage. Never infer first-person from
+5. Default to third-person/free-camera coverage. Never infer first-person from
    “capture the player doing …”. Use first-person only when the user explicitly
    requests it.
-5. Default to normal 1:1 world time. A building or environment shot may freeze
+6. Default to normal 1:1 world time. A building or environment shot may freeze
    replay time because elapsed action is immaterial. Apply fast-forward,
    slow-motion, or another speed only when requested or clearly approved.
 
@@ -63,10 +67,12 @@ Permission for filming is not permission for scene dressing.
 1. Confirm Replay Mod is armed with `recording_status`.
 2. Start one logical take, add useful action/transition/mistake markers, and
    execute the single prepared performance batch.
-3. Verify the returned trace and final state. If the performance fails, stop
-   and reject that attempt, diagnose and rehearse, then record a fresh take.
-   Do not hide a long inter-call pause by stitching multiple action batches into
-   the same accepted performance.
+3. Reopen the temporary request record. Verify the returned trace and final
+   observation requirement by requirement, append the movement acceptance
+   result, and accept the take only if the requested actions, order, route, and
+   destination match. Otherwise stop and reject that attempt, diagnose and
+   rehearse, then record a fresh take. Do not hide a long inter-call pause by
+   stitching multiple action batches into the same accepted performance.
 4. Stop the logical take. A stop marker does not finalize an independent file;
    the `.mcpr` remains connection-scoped.
 5. When leaving the world is intended, run `recording_finalize_and_open` and
@@ -81,18 +87,20 @@ End live-game reasoning before authoring the replay camera. Re-read the project,
 accepted source ranges, and `replay_timeline_get`; do not send `game_perform`
 while reasoning about `replay_playback` or camera keyframes.
 
-If subagents are available and their use is permitted, use at most one
-controller for a Minecraft instance. A capture subagent should hand off the
-project/take IDs, accepted ranges, observations, and unresolved warnings, then
-be released before a replay-camera subagent starts. Release the camera subagent
-after shot plates and validation evidence are handed to post-production. This
-phase boundary keeps live controls, replay controls, and editor controls out of
-the same working context.
+Use phase-specific subagents by default when supported, with at most one
+controller for a Minecraft instance. A capture subagent must hand off the
+request-record path, project/take IDs, accepted ranges, observations, and
+unresolved warnings, then be released before a replay-camera subagent starts.
+Release the camera subagent after the request check, shot plates, and validation
+evidence are handed to post-production. Follow the operations rule and ask the
+user before continuing if a governing restriction prevents required release.
 
 ## Edit and review efficiently
 
-1. Open the replay working copy and make small revision-checked timeline
-   changes. On conflict, re-read rather than overwrite.
+1. Inspect the replay timeline before editing. If camera or time edits predate
+   the current request, preserve them and start from a fresh working copy or
+   empty timeline; never reuse their positions without explicit user approval.
+   Make small revision-checked changes and re-read on conflict.
 2. Keep the camera out of walls and terrain during ordinary shots. Default
    scene changes to separate clips for the post-production editor.
 3. For every internal review, use `replay_preview` with contact sheets, frames,
@@ -107,6 +115,9 @@ the same working context.
    occlusion warnings.
 6. Start final-quality renders only with the matching completed validation job,
    then follow each job to a terminal result and inspect actual rendered frames.
+7. Reopen the request record, compare the complete Replay edit and verified
+   shot plates requirement by requirement, and append the result before editor
+   handoff. Correct every material mismatch before advancing.
 
 ## Finish in post-production
 

@@ -8,7 +8,8 @@ description: Plan and author third-person Replay Mod coverage of a Minecraft pla
 The player is the subject, not the camera. “Capture the player doing X” means
 third-person/free-camera footage unless the user explicitly says first-person.
 
-For tool and control contracts, read
+For the mandatory production-memory and information boundaries plus
+tool/control contracts, read
 [Replay MCP operations](../replay-director-workflow/references/replay-mcp-operations.md).
 
 ## Default to fixed observation

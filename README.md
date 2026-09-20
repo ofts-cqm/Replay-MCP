@@ -8,9 +8,7 @@
 Replay MCP connects a Minecraft client, Replay Mod, a local MCP server, and a
 Codex plugin. It lets an AI assistant work with a real Minecraft client through
 safe, normal game inputs; record or import performances; edit Replay Mod
-timelines; render footage; and organize a production project. A player
-or an agent performs in a real world, Replay Mod records the session, and the
-replay tools create the final camera work and render output.
+timelines; render footage; and organize a production project. 
 
 The goal is to open a door for AI to create Minecraft Videos. Currently, it is still
 significantly slower than human editing, but it opens up the possibility for AI
@@ -28,48 +26,19 @@ Replay MCP supports two ways to capture a scene:
 Both paths use the same downstream replay-editing, rendering, project, and
 editor-handoff workflow.
 
-The MCP server is local-first: it communicates with an MCP client over standard
-input/output and with Minecraft over an authenticated loopback connection. It
-is not a public Minecraft server API, a server-console bridge, or a general
-code-execution service.
-
 ## Current support
 
 The current development tree includes:
 
-- A client-side Fabric mod for Minecraft `26.2`, Fabric Loader `0.19.5`,
-  Fabric API `0.160.0+26.2`, and Replay Mod `26.2-2.6.27`.
-- A local authenticated bridge between the Minecraft mod and Node.js MCP
-  sidecar.
-- Minecraft observation, normal-input game actions, and ground navigation.
-- Replay Mod recording, replay opening, timeline editing, preview, still, and
-  render operations.
-- Player-led clip keys, clip-marker parsing, and replay import.
-- A fenced director lease for agent-controlled mutations.
-- Local projects, artifacts, jobs, validation, and editor-neutral handoffs.
-- A 39-tool MCP server and bundled Replay Director Codex plugin.
-- Five production skills for agent-led capture, player-led capture, player
-  cinematography, building/scene cinematography, and post-production, plus a
-  self-contained deployed-agent operations reference.
-
-The filmmaking defaults favor one multi-scene video per request, third-person
-fixed-vantage player coverage, continuous building camera paths, low-resolution
-internal reviews, explicit permission for world interaction, and editor-side
-cutting/combining when a capable post-production MCP is available.
-
-Automated TypeScript, Java, protocol, package, and fake-bridge workflow checks
-exist. They are not a substitute for live graphical acceptance in Minecraft.
+- AI "playwright" tool to observe and interact with Minecraft
+- Replay Mod recording and timeline edit. 
+- Handoff to post-production video editors for caption, music, and clipping, etc.
 
 ## Planned work
 
-Future or optional work includes editor-specific integrations, audio support, multi-client
-coordination, richer dialogue/voice tracks, automated editorial analysis, more
-timeline interchange formats, secured remote operation, standalone binaries,
-and published packages.
-
-The core intentionally excludes arbitrary shell/JVM execution, server-console
-control, anti-cheat or permission bypass, silent world mutation, and a bundled
-general-purpose video editor.
+Future or optional work includes editor-specific integrations, audio generation
+support, multi-client collaboration, richer dialogue/voice tracks, and automated 
+editorial analysis.
 
 ## Development disclaimer
 
@@ -79,16 +48,6 @@ rough. Expect breaking changes between development checkouts.
 
 Use a disposable Minecraft instance and test world at first. Keep backups of
 important worlds, recordings, and editor projects.
-
-## Requirements
-
-- Git.
-- A JDK capable of Java 25 toolchains.
-- Node.js 20 or newer and npm.
-- A dedicated Minecraft/Fabric instance matching
-  [`gradle.properties`](gradle.properties).
-- The matching Replay Mod and Fabric API dependencies.
-- An MCP-capable client, or Codex for the bundled plugin.
 
 ## Installation from source
 
@@ -106,11 +65,12 @@ npm ci
 
 ```sh
 npm run build
-npm run bundle:plugin
+npm run package:plugin
 ```
 
-This compiles the Node.js MCP sidecar and creates the pinned plugin bundle at
-`plugins/replay-director/bin/`.
+This compiles the Node.js MCP sidecar and creates the complete, installable
+plugin at `plugins/replay-director/`. That directory is generated and ignored;
+the authored manifests and skills live in `plugins/replay-director-template/`.
 
 ### 3. Build the Fabric mod
 
@@ -125,15 +85,12 @@ sources JAR.
 
 ### 4. Install it in Minecraft
 
-Create a dedicated Minecraft instance using the versions in
-[`gradle.properties`](gradle.properties). Copy the remapped Replay MCP JAR into
-that instance’s `mods/` directory alongside compatible Replay Mod and Fabric
-API JARs.
+Create a dedicated Minecraft instance using a compatible version.
+Copy the built Replay MCP JAR from ./build/libs into that instance’s `mods/` 
+directory alongside compatible Replay Mod and Fabric API JARs.
 
 Launch Minecraft once. Replay MCP writes local discovery data beneath the game
-directory’s `.replay-mcp/` folder. This is how the sidecar finds and
-authenticates the running client. Do not copy its tokens into source control,
-prompts, or plugin configuration.
+directory’s `.replay-mcp/` folder. 
 
 ### 5. Configure and start the sidecar
 
@@ -174,9 +131,6 @@ client; the generic shape is:
 }
 ```
 
-Do not configure your MCP client to connect directly to the private bridge
-WebSocket; it is an internal authenticated protocol.
-
 ### 7. Optional: install the Codex plugin
 
 ```sh
@@ -186,6 +140,13 @@ codex plugin add replay-director@replay-mcp-local
 
 Start a new Codex thread after installing or updating the plugin.
 
+### 8. Optional: install a post-production editor
+
+This product does not bundle any video editors. A recommended video editor is
+[SynthCat](https://github.com/Relo-video/SynthCut). Please install a
+post-production video editor so the AI agent can add captions, music, and cuts
+after the video is made using Replay. 
+
 ## Usage guide
 
 ### Start a session
@@ -193,8 +154,6 @@ Start a new Codex thread after installing or updating the plugin.
 1. Start Minecraft with Replay Mod and Replay MCP installed.
 2. Enter the world you want to record in and make sure Replay Mod is ready.
 3. Start the sidecar, or let your configured MCP client start it.
-4. Ask the AI to call `system_status` first. It reports whether Minecraft was
-   discovered, its current mode, and the available capabilities.
 
 ### Player-led capture keys
 
@@ -245,11 +204,21 @@ performance.
 For AI-directed work, ask it to acquire control only when you want it to act.
 Only one director may mutate a Minecraft instance at once.
 
-### What happens after capture
+### Default AI behavior
 
-After an accepted replay is finalized, the AI can import it, edit and preview
-it, render footage, and export an editor-neutral handoff. Ask it to inspect
-rendered frames rather than treating a successful job message as visual approval.
+The default behavior for capturing a building is a smooth, connected one shot. 
+
+The default behavior for capturing a player is a multi-spot capturing, connected
+in a video editor. 
+
+By default, AI does not reuse previous edits' timelines to prevent the AI from
+creating two identical videos. If you accept the risk, state explicitly as:
+
+```text
+Reusing prior timeline is acceptable
+```
+
+If you want a different behavior, be sure to state it clearly.
 
 ### Hyprland background rendering
 
@@ -315,39 +284,3 @@ and projects, and discovers the game through the private authenticated bridge
 ([`protocol/bridge-v1`](protocol/bridge-v1)). The Replay Director plugin bundles
 the sidecar and workflow guidance. Source `.mcpr` files remain separate from
 derived previews, renders, checksums, and handoff manifests.
-
-## Repository map
-
-```text
-.
-├── ARCHITECTURE.md              Detailed contracts and status
-├── src/                         Java Fabric mod and tests
-├── protocol/bridge-v1/          Shared bridge schemas and fixtures
-├── packages/mcp-server/         Node.js TypeScript MCP sidecar
-├── plugins/replay-director/     Codex plugin and filmmaking workflows
-├── build.gradle                 Fabric/Loom build configuration
-└── package.json                 npm workspace root
-```
-
-## Validation notes
-
-When changing a public tool, bridge schema, capability, safety boundary, or
-workflow claim, update [`ARCHITECTURE.md`](ARCHITECTURE.md) too. A build or
-fake-bridge test is not visual acceptance; changes that affect capture or
-rendering need a real Minecraft test with inspected rendered output.
-
-Useful checks include:
-
-```sh
-git diff --check
-npm run typecheck
-npm run test
-./gradlew test
-./gradlew build
-```
-
-## License
-
-This project declares the MIT license. See [`LICENSE.txt`](LICENSE.txt) and
-review the licenses for Minecraft, Fabric, Replay Mod, and dependencies before
-redistributing a build.

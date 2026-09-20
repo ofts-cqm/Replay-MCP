@@ -9,7 +9,8 @@ Treat multiple requested actions or locations as scenes in one final video
 unless the user explicitly requests separate videos.
 
 Read [Replay MCP operations](../replay-director-workflow/references/replay-mcp-operations.md)
-for the deployed tool, lease, recording, and job contracts. Read the applicable
+for the mandatory production-memory and information boundaries and the deployed
+tool, lease, recording, and job contracts. Read the applicable
 [player](../minecraft-player-cinematography/SKILL.md) and
 [building/scene](../minecraft-building-cinematography/SKILL.md) camera skills
 before authoring shots.
@@ -24,7 +25,8 @@ control to the agent.
 1. Call `system_status` and `recording_status`. Confirm recording is armed and
    `capabilities.player_clip_capture` is available.
 2. Create or read one production project with ordered scenes. Preserve its
-   exact revision for import.
+   exact revision for import. Create the temporary request record, preserving
+   the initial request verbatim and its absolute path for every later handoff.
 3. Explain the configured keybinds. Defaults are F6 start, F7 accept/end, and
    F8 revoke; Minecraft Controls is authoritative if remapped.
 4. Let the player perform normally. One active clip must end or be revoked
@@ -58,15 +60,22 @@ Acquire control once immediately before `replay_open`, and retain it through
 the contiguous playback, camera editing, preview, validation, and render phase.
 Do not reacquire before each call; the sidecar owns renewal.
 
+Inspect the existing timeline before authoring. If camera or time edits predate
+the current request, preserve them and start with a fresh working copy or empty
+timeline. Do not reuse any previous camera position, time position, speed change,
+or edited range without the user's explicit approval.
+
 Clip timestamps are discovery bounds, not finished shots. Default to
 third-person/free-camera coverage, never first-person unless the user asks.
 For internal review use contact sheets, frames, or `draft_360p` video. Validate
 accepted final ranges, render shot plates, and inspect actual rendered frames.
 
-If permitted subagents are used, release the capture/import subagent after it
-hands off project/take IDs, accepted ranges, and diagnostics. Use a separate
-replay-camera context, then release it before post-production. Only one agent
-may control the Minecraft instance.
+Use phase-specific subagents by default when supported. Release the
+capture/import subagent after it hands off the request-record path, project/take
+IDs, accepted ranges, and diagnostics. Use a separate replay-camera context,
+then append the Replay-edit request check and release it before post-production.
+Only one agent may control the Minecraft instance. If a governing restriction
+prevents required release, ask the user before continuing.
 
 Finish with [Replay post-production](../replay-post-production/SKILL.md),
 project validation, handoff export, and one `control_release` in final cleanup.

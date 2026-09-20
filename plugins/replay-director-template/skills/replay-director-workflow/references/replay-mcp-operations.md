@@ -3,6 +3,70 @@
 This reference is self-contained because a deployed agent may have the plugin
 but not the Replay MCP repository or architecture document.
 
+## Information boundary
+
+Trust concrete facts supplied by the user, including coordinates, destinations,
+route descriptions, names, timings, and creative constraints. Treat them as
+authoritative inputs; do not corroborate or second-guess them merely to gain
+confidence.
+
+For scouting, planning, capture, and replay work, use only Replay Director's
+MCP tools, resources, artifacts, observations, and project state, plus any
+source the user explicitly names or asks you to inspect. In particular:
+
+- do not enumerate, search, or inspect unrelated MCP servers, apps, filesystem
+  data, game registries, mod configurations or logs, minimap data or waypoints,
+  or recordings from other mods to validate a user-supplied fact;
+- absence of corroborating data in an unrelated source is not a contradiction
+  and is never a reason to keep searching; and
+- if Replay MCP directly observes or returns something that conflicts with a
+  user-supplied value, report that exact conflict and ask only if it blocks the
+  requested work. Do not expand the conflict into a third-party investigation.
+
+Use an outside resource only when it is strictly necessary to complete the
+explicit request and the needed information cannot come from the user or Replay
+MCP. State the concrete need, make the smallest bounded lookup, and stop after
+the answer or first no-result. A designated post-production editor is an allowed
+workflow dependency when producing the requested final video, but it must not
+be used to validate Minecraft facts.
+
+## Durable request record and acceptance gates
+
+At the start of every production, after selecting the instance and project but
+before scouting, capture, or editing, write the user's initial request verbatim
+to a unique Markdown file under the operating system's temporary directory.
+Keep the file outside the repository, game directory, replay files, and artifact
+roots. Give it a predictable production-scoped name, record its absolute path in
+every phase checkpoint, and retain it until the final deliverable is accepted.
+
+The request record is append-only and contains:
+
+- the original request, unchanged;
+- later user-approved corrections or clarifications, with the latest explicit
+  instruction taking precedence; and
+- separate acceptance results for AI-directed movement, Replay editing, and
+  post-production when those phases apply.
+
+Reopen this file after any context compaction and at every subagent handoff; do
+not rely on remembered or summarized intent. If it is missing or unreadable,
+ask the user to restate or confirm the request before continuing production.
+
+At the end of each applicable phase, reread the record and compare the observed
+product requirement by requirement:
+
+1. After AI-directed movement, compare the action trace and final observation
+   with the requested actions, order, route, and destination before accepting
+   the take.
+2. At the end of Replay editing, compare the authored timeline, reviewed
+   previews, and validated shot plates with the requested subjects, scenes,
+   order, viewpoints, timing, and style before editor handoff.
+3. At the end of post-production, compare the completed export and inspected
+   frames with the full request before declaring the video finished.
+
+Append each result, including any mismatch and correction, to the request file.
+Do not advance past a failed material requirement: correct it, or ask the user
+when the intended resolution is ambiguous.
+
 ## Mental model
 
 Replay MCP has three different control contexts. Never mix their actions:
@@ -117,6 +181,19 @@ use the working copy returned after finalization/open.
 
 ### Replay camera and rendering
 
+Treat camera and time edits that existed before the current user request as
+historical output, not as a starting point. When `replay_timeline_get` or replay
+metadata reveals a previously authored camera path, camera keyframe, time
+keyframe, speed change, or edited in/out position, preserve that edit and open
+a fresh working copy or empty timeline from the immutable source. Do not copy,
+adapt, or anchor new work to those authored values. Source recording timestamps,
+accepted clip-marker bounds, and newly observed world state remain usable.
+If the edit's provenance is unclear, treat it as predating the current request.
+
+If reuse appears genuinely beneficial, identify the exact prior camera or time
+values and ask the user explicitly before reusing any of them. Similarity between
+the old and current requests is not permission.
+
 - `replay_open`, `replay_close`, `replay_save`: immutable-source session and
   save-as lifecycle.
 - `replay_playback`: seek/play/pause/speed/step/spectate/detach in integer
@@ -164,14 +241,22 @@ project/editor instead of pretending Replay Mod has native tracks.
 
 ## Context handoff
 
-If the host supports permitted subagents, only one may own/control a Minecraft
-instance. Split work at durable handoffs:
+Use phase-specific subagents by default when the host supports them. Invocation
+of this workflow grants standing user permission to create and release those
+subagents, subject to higher-priority instructions and host capabilities. Only
+one subagent may own or control a Minecraft instance. Split work at durable
+handoffs:
 
 1. capture hands off project/take IDs, source ranges, observations, and issues;
 2. replay camera hands off timeline revision, validated shot ranges, render
    jobs/artifacts, and visual findings; and
 3. post-production receives only verified media plus the creative brief.
 
-Release or dismiss the prior subagent at each handoff. If working alone, write
-the same checkpoint and deliberately switch tool vocabularies before the next
-context.
+Each handoff must include the request-record path. Release or dismiss the prior
+subagent before starting the next phase subagent; never keep overlapping
+controllers or retain an old phase agent merely for convenience. If any
+governing instruction or host limitation prevents the required release, explain
+the restriction and ask the user for explicit permission or direction before
+continuing. User permission does not override a higher-priority prohibition. If
+the host has no subagent capability, write the same checkpoint and deliberately
+switch tool vocabularies before the next context.
