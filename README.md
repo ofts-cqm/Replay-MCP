@@ -8,11 +8,15 @@
 Replay MCP connects a Minecraft client, Replay Mod, a local MCP server, and a
 Codex plugin. It lets an AI assistant work with a real Minecraft client through
 safe, normal game inputs; record or import performances; edit Replay Mod
-timelines; render footage; and organize a production project.
-
-The goal is Minecraft filmmaking, not generated Minecraft-like video. A player
+timelines; render footage; and organize a production project. A player
 or an agent performs in a real world, Replay Mod records the session, and the
 replay tools create the final camera work and render output.
+
+The goal is to open a door for AI to create Minecraft Videos. Currently, it is still
+significantly slower than human editing, but it opens up the possibility for AI
+Minecraft film making. It also frees YouTubers from frequent video editing and
+give them more time to focus on planning and script writing while the AI processes
+all edits in the background.
 
 Replay MCP supports two ways to capture a scene:
 
@@ -238,6 +242,35 @@ Only one director may mutate a Minecraft instance at once.
 After an accepted replay is finalized, the AI can import it, edit and preview
 it, render footage, and export an editor-neutral handoff. Ask it to inspect
 rendered frames rather than treating a successful job message as visual approval.
+
+### Hyprland background rendering
+
+On Hyprland, a Replay Mod render may stop progressing when Minecraft is moved
+to an inactive workspace, even when Minecraft's pause-on-lost-focus option is
+disabled. This is compositor presentation behavior and is unrelated to the
+Replay MCP director lease.
+
+For Hyprland 0.56 using the Lua configuration provider, keep the Minecraft
+window rendering while it is on another workspace and set the background FPS
+limit to at least the intended output frame rate:
+
+```lua
+hl.config({
+    misc = {
+        render_unfocused_fps = 60,
+    },
+})
+
+hl.window_rule({
+    name = "minecraft-replay-background-render",
+    match = {
+        class = "^Minecraft\\* .*$",
+        xwayland = true,
+    },
+    render_unfocused = true,
+})
+```
+
 
 ## High-level architecture
 
