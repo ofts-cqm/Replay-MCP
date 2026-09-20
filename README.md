@@ -143,7 +143,7 @@ Start a new Codex thread after installing or updating the plugin.
 ### 8. Optional: install a post-production editor
 
 This product does not bundle any video editors. A recommended video editor is
-[SynthCat](https://github.com/Relo-video/SynthCut). Please install a
+[SynthCut](https://github.com/Relo-video/SynthCut). Please install a
 post-production video editor so the AI agent can add captions, music, and cuts
 after the video is made using Replay. 
 
