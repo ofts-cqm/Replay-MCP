@@ -33,7 +33,7 @@ The current development tree includes:
 - AI "playwright" tool to observe and interact with Minecraft
 - Replay Mod recording and timeline edit. 
 - Handoff to post-production video editors for caption, music, and clipping, etc.
-- 
+
 ## Planned work
 
 Future or optional work includes editor-specific integrations, audio generation
