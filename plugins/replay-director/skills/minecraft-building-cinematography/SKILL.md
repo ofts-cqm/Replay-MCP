@@ -5,7 +5,8 @@ description: Plan and author smooth Replay Mod camera coverage of Minecraft buil
 
 # Minecraft Building Cinematography
 
-For tool and control contracts, read
+For the mandatory production-memory and information boundaries plus
+tool/control contracts, read
 [Replay MCP operations](../replay-director-workflow/references/replay-mcp-operations.md).
 
 Building and scene coverage is camera-led. Unlike player coverage, the camera
