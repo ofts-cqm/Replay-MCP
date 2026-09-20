@@ -2,7 +2,7 @@
 
 Status: the Minecraft-side Fabric submod, private bridge, Node sidecar, complete
 39-tool public MCP surface, production project store, player-led capture route,
-and Replay Director plugin are implemented. Automated fake-bridge acceptance
+and production-oriented Replay Director skill package are implemented. Automated fake-bridge acceptance
 passes. The user-attended graphical player-capture/Replay Mod/render smoke
 remains pending, so that route is not yet marked live-validated. Optional editor
 integrations remain future work.
@@ -20,7 +20,7 @@ still pending.
 | Replay Mod recording, replay, timeline, and render adapters | **Implemented** |
 | Public MCP tools, resources, jobs, and bridge client | **Implemented; automated acceptance passed** |
 | Production manifests and editor-neutral handoff | **Implemented; automated acceptance passed** |
-| Codex plugin and filmmaking workflows | **Agent-led and player-led workflows implemented; automated acceptance passed** |
+| Codex plugin and filmmaking workflows | **Five deployed-agent workflows/shot skills plus self-contained operations guide implemented** |
 | Player-led clip capture and normalized replay import | **Implemented; automated acceptance passed; live smoke pending** |
 | Optional editor MCP profiles/integrations | **Pending / optional** |
 | Complete end-to-end workflow acceptance testing | **Automated fake bridge passed; live user-attended smoke pending** |
@@ -57,6 +57,15 @@ the current development snapshot, not a permanent compatibility promise.
 - **Keep workflows out of the wire protocol.** The mod exposes reliable,
   composable primitives. Codex skills describe filmmaking workflows such as
   scene transitions, dialogue coverage, montages, and trailers.
+- **One requested production means one deliverable.** Multiple actions or
+  locations are scenes in one video unless the user explicitly requests
+  separate outputs.
+- **Do not infer scene authority.** Filming permission does not authorize world
+  interaction, block changes, inventory changes, commands, teleports, or other
+  scene setup. Those require explicit user permission.
+- **Keep control contexts separate.** Live player inputs, replay camera/timeline
+  controls, and post-production editor controls use deliberate handoffs rather
+  than one blended action vocabulary.
 - **Make mutations auditable.** Every action, command, timeline edit, and render
   is associated with a request ID and an action trace.
 - **One director at a time.** The mod, as the final authority, grants at most
@@ -996,6 +1005,11 @@ Lease behavior:
 - a sidecar-owned preview, finalization, or render job keeps heartbeats active
   until the persistent job reaches a terminal state; the job itself remains
   safe if a human override revokes subsequent control;
+- acquiring twice from the same sidecar session is idempotent, while a
+  different owner still receives `control_busy`;
+- the sidecar serializes renewal calls, uses a deadline shorter than the
+  advertised interval, and retries a transient failure only while the last
+  authoritative expiry is still safely in the future;
 - loss of heartbeat, process exit, explicit release, idle expiry, emergency
   stop, or human revocation cancels input and invalidates the lease;
 - the MCP API cannot force-acquire or revoke another owner; and
@@ -1080,7 +1094,7 @@ Where Replay Mod lacks a native representation for an optional track or piece
 of metadata, Replay MCP stores it in versioned sidecar data and makes that fact
 visible through capability and provenance fields.
 
-## 8. Codex plugin package — Minimal workflow implemented
+## 8. Codex plugin package — Production workflow package implemented
 
 ```text
 plugins/replay-director/
@@ -1091,15 +1105,28 @@ plugins/replay-director/
 ├── bin/replay-mcp-server.mjs
 ├── protocol/bridge-v1/
 └── skills/
-    ├── replay-director-workflow/SKILL.md
-    └── player-led-capture-workflow/SKILL.md
+    ├── replay-director-workflow/
+    │   ├── SKILL.md
+    │   └── references/replay-mcp-operations.md
+    ├── player-led-capture-workflow/SKILL.md
+    ├── minecraft-player-cinematography/SKILL.md
+    ├── minecraft-building-cinematography/SKILL.md
+    └── replay-post-production/SKILL.md
 ```
 
-The package contains separate agent-led and player-led workflow skills. They
-share capability checks, projects, replay editing, preview, rendering, handoff,
-recovery, and guaranteed release while keeping their live capture authority
-distinct. More artistic genre skills can grow without changing the MCP
-protocol.
+The package contains separate agent-led and player-led end-to-end workflows,
+specific player and building/scene cinematography skills, and a post-production
+skill. A shared deployed-agent operations reference documents the 39 public
+tools by context, the lease boundary, connection-scoped recording, immutable
+sources, preview/final-render gates, projects, jobs, and evidence expectations.
+It does not assume the deployed agent can read this repository.
+
+The agent-led workflow scouts and rehearses before capture. An accepted
+agent-performed take contains one complete `game_perform` batch so MCP call
+boundaries do not create visible pauses. It treats player movement as fixed-
+vantage coverage by default, uses third-person/free-camera footage unless
+first-person is explicit, and keeps world interaction behind explicit user
+authorization.
 
 The distinct `player-led-capture-workflow` skill does not acquire control or
 call `game_perform` during live performance. It waits for
@@ -1211,7 +1238,8 @@ sequenceDiagram
     G-->>M: image, targets, player/world state
     M-->>A: grounded observation
 
-    A->>M: game_perform(scene setup, commands, flight)
+    A->>M: control_acquire (once)
+    A->>M: game_perform(route rehearsal outside accepted take)
     M->>G: typed action batch
     G-->>M: trace + resulting state
     M-->>A: action results and checkpoint image
@@ -1219,14 +1247,15 @@ sequenceDiagram
     A->>M: recording_start
     M->>G: start recording
     G->>R: recording lifecycle
-    A->>M: game_perform(performance)
+    A->>M: game_perform(one complete performance batch)
     A->>M: recording_add_marker
     A->>M: recording_stop
     R-->>M: finalized replay
 
     A->>M: replay_open
     A->>M: replay_timeline_apply
-    A->>M: replay_preview / replay_observe
+    A->>M: replay_preview (contact sheet / frames / draft_360p)
+    A->>M: replay_validate_range
     A->>M: render_validate
     A->>M: render_start
     M-->>A: job ID
@@ -1240,6 +1269,7 @@ sequenceDiagram
         A->>E: preview, revise, and export
         E-->>A: final video
     end
+    A->>M: control_release
 ```
 
 ### 11.2 Player-led capture and shared editing workflow — Implemented; live validation pending
@@ -1297,10 +1327,37 @@ render verification, or final editorial decisions. The importer supplies
 replay identity and project association; the AI supplies those downstream edit
 decisions from the accepted ranges.
 
+### 11.3 Production and cinematography defaults
+
+- Multiple requested actions or destinations become ordered scenes in one
+  final video unless separate videos are explicit.
+- Player capture defaults to third-person/free-camera fixed observation with
+  the subject roughly within 15 blocks. Longer movement uses several fixed
+  positions; a purposeful follow shot is suitable mainly for medium travel of
+  roughly 20–80 blocks and uses a 1–3 block offset rather than staying directly
+  behind the player.
+- Building/scene capture surveys several views, then uses a continuous camera
+  trace for each shot. It may pause replay time when world motion is irrelevant.
+- Ordinary camera motion avoids walls and terrain. Scene changes are separate
+  clips for post-production by default. Only an explicitly requested direct
+  smooth transition may pass through geometry for about 0.5–1 second, unless
+  the user grants broader permission.
+- Time remains 1:1 by default. Fast-forward, slow-motion, and other retiming
+  require user intent; the building/scene pause exception remains available.
+- Every internal edit review uses sampled frames, a contact sheet, or
+  `draft_360p`. Final quality follows low-quality approval and matching settled
+  range validation.
+- When a capable editor is installed, Replay MCP produces validated shot
+  plates while the editor performs most trimming, combining, transitions,
+  titles, audio, grading, and the single master export.
+- If permitted subagents are used, only one controls the Minecraft instance.
+  Capture, replay-camera, and post-production agents hand off durable IDs and
+  evidence, then the prior agent is released to keep contexts separate.
+
 ## 12. Scope boundaries
 
 **Implementation status:** The included Minecraft, sidecar, project/provenance,
-editor handoff, and minimal Codex workflow scope is implemented. Only the live
+editor handoff, and production Codex workflow scope is implemented. Only the live
 graphical acceptance run remains pending as identified above.
 
 Included:
@@ -1518,16 +1575,21 @@ connection's session state and injects them into all mutating bridge calls. The
 model does not need to repeat lease credentials in every public tool call.
 
 After `control_acquire`, the controller sends `lease.heartbeat` at the interval
-advertised by the bridge. `active` is true only while an operation is executing
-or within the configured recent-activity window. On stdio shutdown,
+advertised by the bridge. Calls are serialized so a slow renewal cannot overlap
+the next one. A transient timeout/internal failure is retried within the last
+known authoritative expiry; control/stale-fence failures terminate ownership.
+`active` is true only while an operation is executing or within the configured
+recent-activity window. Repeated same-session acquisition returns the owned
+lease without another bridge acquire. On stdio shutdown,
 `control_release`, signal handling, or bridge failure, it cancels active work
 and makes a best-effort release. The mod remains the authoritative lease owner
 and fencing authority.
 
-The implemented bridge should expose its lease TTL, expected heartbeat
-interval, and idle ceiling in `system.hello` or `system.status`. If those fields
-are not yet present, add them before treating heartbeat timing as a stable
-sidecar contract; do not permanently duplicate the Java defaults in TypeScript.
+The bridge exposes its lease TTL, expected heartbeat interval, and idle ceiling
+in `system.hello` and `system.status`. Fresh configurations default to a 30
+second TTL, 10 second expected heartbeat, and 5 minute idle ceiling. Existing
+explicit configuration remains authoritative; TypeScript schedules from the
+advertised policy rather than permanently duplicating those Java defaults.
 
 #### Tool adapters
 
@@ -1633,7 +1695,7 @@ conceptually:
       "type": "stdio",
       "command": "node",
       "args": ["./bin/replay-mcp-server.mjs"],
-      "cwd": "."
+      "cwd": "./"
     }
   }
 }
@@ -1692,7 +1754,7 @@ Implemented verification:
   authenticated WebSocket behavior, competing leases, timeouts, artifact
   confinement/checksums, project revisions/handoffs, plugin equivalence, and
   the full in-process MCP/fake-bridge workflow. This includes launching the
-  bundled server through the exact plugin stdio definition, listing all 38
+  bundled server through the exact plugin stdio definition, listing all 39
   tools, and calling offline `system_status`;
 - 17 JUnit tests pass, including the Java half of the shared valid/invalid
   bridge-fixture contract plus output-time range mapping and queued capture;
@@ -1701,7 +1763,7 @@ Implemented verification:
 - `npm pack --dry-run` contains only the declared package files; and
 - the repo-local `replay-mcp-local` marketplace installs and enables
   `replay-director` version `0.1.0+codex.20260918205052`; an MCP client starts
-  the installed cache copy over stdio, lists all 38 tools, and receives its
+  the installed cache copy over stdio, lists all 39 tools, and receives its
   offline status successfully.
 
 The 2026-09-18 baseline E2E validated the original live workflow. The new
@@ -1727,6 +1789,28 @@ must not be claimed as achieved until that run reports phase timings.
   and `git diff --check` pass; and
 - live graphical player capture and rendered-output acceptance remain pending
   under section 14.3.
+
+### 13.10 Production skill and lease revision snapshot (2026-09-19)
+
+- all five skill entrypoints pass `quick_validate.py`, and the complete plugin
+  passes `validate_plugin.py` at version
+  `0.1.0+codex.20260920014413`;
+- 21 Vitest tests pass, including same-session idempotent acquire, serialized
+  job-aware heartbeats, and retry after one simulated transient heartbeat
+  failure without losing mutation authority;
+- 30 JUnit tests pass with no failures, errors, or skips, including the fresh
+  30 second TTL / 10 second heartbeat configuration defaults;
+- strict TypeScript typecheck, production build, deterministic plugin bundle,
+  39-tool bundled stdio smoke, and `git diff --check` pass;
+- the repo-local marketplace install is enabled at
+  `0.1.0+codex.20260920014413`; its exact cache copy matches the source plugin
+  and passes the 39-tool stdio smoke; and
+- a live title-screen Minecraft bridge smoke used the existing persisted 15
+  second TTL / 5 second heartbeat policy: two public `control_acquire` calls
+  returned the same lease, ownership survived a real heartbeat, and
+  `control_release` cleared it. No world was opened or modified. This verifies
+  live lease compatibility, not graphical filmmaking behavior or adoption of
+  the new defaults by an existing config.
 
 ## 14. Player-led capture implementation and acceptance — Implemented; live acceptance pending
 

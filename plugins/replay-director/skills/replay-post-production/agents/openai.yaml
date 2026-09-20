@@ -1,0 +1,3 @@
+interface:
+  display_name: "Replay Post Production"
+  short_description: "Assemble replay shots into one finished video"

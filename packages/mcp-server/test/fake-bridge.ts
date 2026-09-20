@@ -12,7 +12,11 @@ export interface FakeBridge {
   close(): Promise<void>;
 }
 
-export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
+interface FakeBridgeOptions {
+  heartbeatFailures?: number;
+}
+
+export async function createFakeBridge(gameDir: string, options: FakeBridgeOptions = {}): Promise<FakeBridge> {
   const instanceId = crypto.randomUUID();
   const token = "ab".repeat(32);
   const artifacts = join(gameDir, ".replay-mcp", "artifacts");
@@ -37,6 +41,7 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
   let fence = 0;
   let recording = false;
   let revision = "1";
+  let heartbeatFailures = options.heartbeatFailures ?? 0;
   const wss = new WebSocketServer({
     host: "127.0.0.1", port: 0, path: "/bridge",
     verifyClient: ({ req }: { origin: string; secure: boolean; req: IncomingMessage }) => req.headers["x-replay-mcp-token"] === token,
@@ -74,6 +79,10 @@ export async function createFakeBridge(gameDir: string): Promise<FakeBridge> {
           success(lease()); break;
         case "lease.heartbeat":
           if (leaseOwner !== socket || params.lease_id !== leaseId) return failure("control_required", "lost");
+          if (heartbeatFailures > 0) {
+            heartbeatFailures--;
+            return failure("timeout", "simulated transient heartbeat failure");
+          }
           success(lease()); break;
         case "lease.release": leaseOwner = undefined; leaseId = ""; fence++; success({ released: true }); break;
         case "observation.framebuffer": success({ ...artifact(pngPath, png, "image/png"), view: params.view ?? "player", capture_tick: 80, snapshot: { synchronized: true, tick: 80, player: { x: 1, y: 64, z: 2 } } }); break;

@@ -1,55 +1,73 @@
 ---
 name: player-led-capture-workflow
-description: Turn player-performed Minecraft clips marked with Replay MCP keybinds into normalized replay takes, then edit, visually verify, render, and hand them off. Use when the player controls live gameplay; use replay-director-workflow when Codex should direct the live performance.
+description: Turn a player-controlled Minecraft performance marked with Replay MCP keybinds into one multi-scene video with authored replay cameras and verified renders. Use when the human player performs live; use replay-director-workflow when Codex controls the player.
 ---
 
 # Player-Led Capture Workflow
 
-Keep human performance lease-free. During live capture, do not call
-`control_acquire`, `game_perform`, `recording_start`, or `recording_stop`.
-Replay Mod owns the connection-scoped recording; the player's local keybinds
-only annotate accepted and rejected source ranges.
+Treat multiple requested actions or locations as scenes in one final video
+unless the user explicitly requests separate videos.
 
-## Prepare capture
+Read [Replay MCP operations](../replay-director-workflow/references/replay-mcp-operations.md)
+for the deployed tool, lease, recording, and job contracts. Read the applicable
+[player](../minecraft-player-cinematography/SKILL.md) and
+[building/scene](../minecraft-building-cinematography/SKILL.md) camera skills
+before authoring shots.
 
-1. Read `system_status` and `recording_status`. Confirm Replay Mod recording is
-   armed and `capabilities.player_clip_capture` is available.
-2. Create or read the production project and ensure the intended scene exists.
-   Preserve its exact revision for import.
-3. Tell the player the configured clip keybinds. Defaults are F6 to start, F7
-   to accept/end, and F8 to revoke; Minecraft Controls remains authoritative
-   if they were remapped.
-4. Let the player perform normally. An active clip must be ended or revoked
-   before another starts. Do not synthesize inputs or acquire a lease.
-5. Ask the player to leave the world when the capture session is complete so
-   Replay Mod finalizes the immutable `.mcpr`. An unmatched start is an
-   incomplete attempt, not an accepted clip.
+## Keep live performance lease-free
 
-## Import the finalized source
+During player performance, do not call `control_acquire`, `game_perform`,
+`recording_start`, or `recording_stop`. Replay Mod owns the connection-scoped
+recording; local keybinds annotate source ranges without transferring player
+control to the agent.
 
-Use `replay_list` and `replay_get` to identify the finalized recording. Call
-`project_import_replay` with the project ID, exact base revision, scene ID,
-replay path or ID, and `provenance: player`. Import is lease-free.
+1. Call `system_status` and `recording_status`. Confirm recording is armed and
+   `capabilities.player_clip_capture` is available.
+2. Create or read one production project with ordered scenes. Preserve its
+   exact revision for import.
+3. Explain the configured keybinds. Defaults are F6 start, F7 accept/end, and
+   F8 revoke; Minecraft Controls is authoritative if remapped.
+4. Let the player perform normally. One active clip must end or be revoked
+   before another starts. An unmatched start is incomplete, never accepted.
+5. Ask the player to leave the world only when the capture session is complete,
+   so Replay Mod can finalize the immutable connection-scoped `.mcpr`.
 
-Review the returned `CapturedTake` rather than inferring ranges yourself:
+The agent must not modify or interact with the world during this phase unless
+the user separately and explicitly grants that authority. A filming request is
+not scene-setup permission.
 
-- accepted clips have explicit `replay_in_us` and `replay_out_us`;
+## Import accepted ranges
+
+Use `replay_list` and `replay_get` to identify the finalized source, then call
+`project_import_replay` with the project ID, current base revision, scene ID,
+source replay, and `provenance: player`. This import is lease-free.
+
+Use the returned `CapturedTake` exactly:
+
+- accepted clips provide authoritative `replay_in_us` and `replay_out_us`;
 - revoked, incomplete, duplicate, malformed, and out-of-range attempts remain
   diagnostics and never become shots; and
-- repeating an import at the current revision must not duplicate takes or
-  shots.
+- repeated import at the current revision must not duplicate takes or shots.
 
-On a revision conflict, re-read the project and reconcile before retrying. Do
-not open a still-recording replay or modify the source `.mcpr`.
+On revision conflict, re-read and reconcile. Never edit the source `.mcpr` or
+open a still-recording replay.
 
-## Edit after capture
+## Author replay shots
 
-Acquire `control_acquire` only when replay opening, playback, timeline editing,
-preview, or rendering begins. From this point, follow the replay editing,
-settled-range validation, rendering, visual inspection, handoff, recovery, and
-guaranteed release guidance in `replay-director-workflow`.
+Acquire control once immediately before `replay_open`, and retain it through
+the contiguous playback, camera editing, preview, validation, and render phase.
+Do not reacquire before each call; the sidecar owns renewal.
 
-Treat imported clip timestamps as discovery bounds, not proof of a finished
-shot. Visually review accepted ranges, author the camera and output-time map,
-run `replay_validate_range`, inspect actual rendered frames, and release the
-lease in the final cleanup path.
+Clip timestamps are discovery bounds, not finished shots. Default to
+third-person/free-camera coverage, never first-person unless the user asks.
+For internal review use contact sheets, frames, or `draft_360p` video. Validate
+accepted final ranges, render shot plates, and inspect actual rendered frames.
+
+If permitted subagents are used, release the capture/import subagent after it
+hands off project/take IDs, accepted ranges, and diagnostics. Use a separate
+replay-camera context, then release it before post-production. Only one agent
+may control the Minecraft instance.
+
+Finish with [Replay post-production](../replay-post-production/SKILL.md),
+project validation, handoff export, and one `control_release` in final cleanup.
+On human override or lease loss, stop instead of repeatedly reacquiring.

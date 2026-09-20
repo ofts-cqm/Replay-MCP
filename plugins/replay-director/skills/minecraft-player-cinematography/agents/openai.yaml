@@ -1,0 +1,3 @@
+interface:
+  display_name: "Minecraft Player Cinematography"
+  short_description: "Frame player actions and travel cinematically"

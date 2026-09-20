@@ -48,6 +48,14 @@ The current development tree includes:
 - A fenced director lease for agent-controlled mutations.
 - Local projects, artifacts, jobs, validation, and editor-neutral handoffs.
 - A 39-tool MCP server and bundled Replay Director Codex plugin.
+- Five production skills for agent-led capture, player-led capture, player
+  cinematography, building/scene cinematography, and post-production, plus a
+  self-contained deployed-agent operations reference.
+
+The filmmaking defaults favor one multi-scene video per request, third-person
+fixed-vantage player coverage, continuous building camera paths, low-resolution
+internal reviews, explicit permission for world interaction, and editor-side
+cutting/combining when a capable post-production MCP is available.
 
 Automated TypeScript, Java, protocol, package, and fake-bridge workflow checks
 exist. They are not a substitute for live graphical acceptance in Minecraft.

@@ -21,8 +21,8 @@ public final class ReplayMcpConfig {
     public boolean commandsEnabled = false;
     public boolean flightAutomationEnabled = true;
     public boolean physicalInputRevokesLease = true;
-    public int leaseTtlSeconds = 15;
-    public int expectedHeartbeatSeconds = 5;
+    public int leaseTtlSeconds = 30;
+    public int expectedHeartbeatSeconds = 10;
     public int idleCeilingSeconds = 300;
     public List<String> commandDenyPatterns = new ArrayList<>();
     public List<String> auditRedactionPatterns = new ArrayList<>();

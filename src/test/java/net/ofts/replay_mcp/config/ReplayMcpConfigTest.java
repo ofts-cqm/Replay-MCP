@@ -16,10 +16,10 @@ class ReplayMcpConfigTest {
         assertFalse(config.commandsEnabled);
         assertTrue(config.flightAutomationEnabled);
         assertTrue(config.physicalInputRevokesLease);
-        assertEquals(15, config.leaseTtlSeconds);
-        assertEquals(5, config.expectedHeartbeatSeconds);
+        assertEquals(30, config.leaseTtlSeconds);
+        assertEquals(10, config.expectedHeartbeatSeconds);
         assertEquals(300, config.idleCeilingSeconds);
         assertTrue(config.commandDenyPatterns.isEmpty());
-        assertEquals(15, ReplayMcpConfig.loadOrCreate(temp).leaseTtlSeconds);
+        assertEquals(30, ReplayMcpConfig.loadOrCreate(temp).leaseTtlSeconds);
     }
 }

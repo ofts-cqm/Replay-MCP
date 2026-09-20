@@ -38551,24 +38551,23 @@ var LeaseController = class {
     return this.#owned.get(instanceId)?.lease;
   }
   async acquire(client, ownerLabel = this.ownerLabel) {
-    if (this.#owned.has(client.descriptor.instanceId)) {
-      throw new SidecarError("conflict", "this MCP session already owns control of the instance");
-    }
+    const existing = this.#owned.get(client.descriptor.instanceId);
+    if (existing) return existing.lease;
     const lease = LeaseSchema.parse(await client.call("lease.acquire", { owner_label: ownerLabel }));
     const intervalMs = client.hello?.lease_policy.heartbeat_interval_ms;
     if (!intervalMs) throw new SidecarError("protocol_mismatch", "bridge did not advertise lease heartbeat policy");
     const owned = {
       lease,
       client,
+      heartbeatInFlight: false,
+      heartbeatFailures: 0,
+      timer: void 0,
       active: 0,
       lastActivity: Date.now(),
-      jobs: /* @__PURE__ */ new Set(),
-      timer: setInterval(() => {
-        void this.#heartbeat(client.descriptor.instanceId);
-      }, intervalMs)
+      jobs: /* @__PURE__ */ new Set()
     };
-    owned.timer.unref();
     this.#owned.set(client.descriptor.instanceId, owned);
+    this.#scheduleHeartbeat(client.descriptor.instanceId, intervalMs);
     client.once("disconnect", () => this.#lose(client.descriptor.instanceId, "bridge disconnected"));
     await this.#audit.append("lease.acquired", { instance_id: client.descriptor.instanceId, fence: lease.fence, owner_label: lease.owner_label });
     return lease;
@@ -38577,7 +38576,7 @@ var LeaseController = class {
     const owned = this.#owned.get(client.descriptor.instanceId);
     if (!owned) throw new SidecarError("control_required", "this MCP session does not own the instance lease");
     this.#owned.delete(client.descriptor.instanceId);
-    clearInterval(owned.timer);
+    if (owned.timer) clearTimeout(owned.timer);
     try {
       await client.call("lease.release", { lease_id: owned.lease.lease_id, fence: owned.lease.fence }, { deadlineMs: 3e3 });
     } finally {
@@ -38587,7 +38586,7 @@ var LeaseController = class {
   }
   async mutate(client, method, params, signal) {
     const owned = this.#owned.get(client.descriptor.instanceId);
-    if (!owned) throw new SidecarError("control_required", "control_acquire is required before this mutation");
+    if (!owned) throw new SidecarError("control_required", "call control_acquire once before the first mutation in this directing or replay-editing phase; do not call it before every edit");
     owned.active++;
     owned.lastActivity = Date.now();
     try {
@@ -38624,24 +38623,60 @@ var LeaseController = class {
       owned.lastActivity = Date.now();
     }
   }
-  async #heartbeat(instanceId) {
+  #scheduleHeartbeat(instanceId, delayMs) {
     const owned = this.#owned.get(instanceId);
     if (!owned) return;
+    if (owned.timer) clearTimeout(owned.timer);
+    owned.timer = setTimeout(() => {
+      owned.timer = void 0;
+      void this.#heartbeat(instanceId);
+    }, delayMs);
+    owned.timer.unref();
+  }
+  async #heartbeat(instanceId) {
+    const owned = this.#owned.get(instanceId);
+    if (!owned || owned.heartbeatInFlight) return;
+    owned.heartbeatInFlight = true;
+    const policy = owned.client.hello?.lease_policy;
+    const intervalMs = policy?.heartbeat_interval_ms ?? 5e3;
+    const ttlMs = policy?.ttl_ms ?? 15e3;
+    const deadlineMs = Math.max(500, Math.min(intervalMs - 250, Math.floor(ttlMs / 3)));
     try {
       const lease = LeaseSchema.parse(await owned.client.call("lease.heartbeat", {
         lease_id: owned.lease.lease_id,
         fence: owned.lease.fence,
         active: owned.active > 0 || owned.jobs.size > 0 || Date.now() - owned.lastActivity < 2e3
-      }, { deadlineMs: Math.max(2e3, Math.floor((owned.client.hello?.lease_policy.ttl_ms ?? 15e3) / 2)) }));
+      }, { deadlineMs }));
+      if (this.#owned.get(instanceId) !== owned) return;
       owned.lease = lease;
+      owned.heartbeatFailures = 0;
+      this.#scheduleHeartbeat(instanceId, intervalMs);
     } catch (error62) {
-      this.#lose(instanceId, error62 instanceof Error ? error62.message : String(error62));
+      if (this.#owned.get(instanceId) !== owned) return;
+      const terminalBridgeError = error62 instanceof BridgeRpcError && !["timeout", "internal_error"].includes(error62.code);
+      const expiresAt = Date.parse(owned.lease.expires_at);
+      const remainingMs = Number.isFinite(expiresAt) ? expiresAt - Date.now() : 0;
+      if (terminalBridgeError || !owned.client.connected || remainingMs <= 250) {
+        this.#lose(instanceId, error62 instanceof Error ? error62.message : String(error62));
+        return;
+      }
+      owned.heartbeatFailures++;
+      void this.#audit.append("lease.heartbeat_retry", {
+        instance_id: instanceId,
+        fence: owned.lease.fence,
+        attempt: owned.heartbeatFailures,
+        remaining_ms: remainingMs,
+        reason: error62 instanceof Error ? error62.message : String(error62)
+      });
+      this.#scheduleHeartbeat(instanceId, Math.max(250, Math.min(1e3, Math.floor(remainingMs / 3))));
+    } finally {
+      owned.heartbeatInFlight = false;
     }
   }
   #lose(instanceId, reason) {
     const owned = this.#owned.get(instanceId);
     if (!owned) return;
-    clearInterval(owned.timer);
+    if (owned.timer) clearTimeout(owned.timer);
     this.#owned.delete(instanceId);
     void this.#audit.append("lease.lost", { instance_id: instanceId, reason });
   }
@@ -39226,7 +39261,7 @@ function registerTools(server, runtime) {
   }));
   server.registerTool("control_acquire", {
     title: "Acquire director control",
-    description: "Acquire the exclusive, expiring Minecraft director lease. Never steals or queues control.",
+    description: "Call once before the first lease-required operation in a contiguous directing or replay-editing phase. Same-session repeats return the owned lease; this never steals or queues control.",
     inputSchema: external_exports.object({ ...instance, owner_label: external_exports.string().min(1).max(64).optional() }),
     annotations: MUTATE
   }, safe(async ({ instance_id, owner_label }) => {

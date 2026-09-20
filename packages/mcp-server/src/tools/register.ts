@@ -80,7 +80,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   }));
 
   server.registerTool("control_acquire", {
-    title: "Acquire director control", description: "Acquire the exclusive, expiring Minecraft director lease. Never steals or queues control.",
+    title: "Acquire director control", description: "Call once before the first lease-required operation in a contiguous directing or replay-editing phase. Same-session repeats return the owned lease; this never steals or queues control.",
     inputSchema: z.object({ ...instance, owner_label: z.string().min(1).max(64).optional() }), annotations: MUTATE,
   }, safe(async ({ instance_id, owner_label }) => {
     const client = runtime.client(instance_id);

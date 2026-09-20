@@ -1,103 +1,122 @@
 ---
 name: replay-director-workflow
-description: Direct a Minecraft scene, record logical Replay Mod takes, edit and visually verify replay shots, render outputs, and export an editor handoff through Replay MCP. Use for Minecraft filmmaking work; do not use for ordinary gameplay or unrelated video editing.
+description: Direct an agent-performed Minecraft production from scouting through Replay Mod capture, replay camera work, verified shot plates, and editor handoff. Use when Codex controls the live player; do not use for ordinary gameplay or a player-controlled performance.
 ---
 
 # Replay Director Workflow
 
-Use Replay MCP as an evidence-driven filmmaking loop. The Minecraft client and
-Replay Mod remain authoritative; never describe a queued operation as complete
-until the corresponding result or job says it completed.
+Treat the request as one production unless the user explicitly asks for separate
+videos. “Record this, then record that” normally means multiple scenes in one
+final video, not one output per phrase.
 
-## Start safely
+Read [Replay MCP operations](references/replay-mcp-operations.md) before using
+the tools. It is the deployed-agent reference for control, runtime contexts,
+recording finalization, jobs, and the public tool groups.
 
-1. Call `system_status`. If offline, report the searched game directories and
-   ask the user to start a prepared client with the Replay MCP Fabric mod.
-2. Check runtime mode, command policy, flight policy, Replay Mod capability,
-   and artifact roots before relying on them. Commands cannot be enabled by a
-   tool. Flight is available only when Minecraft already grants it.
-3. Create or open the production project before recording if the user wants a
-   reusable handoff. Keep intent, shots, excluded ranges, FOV/look-at metadata,
-   captions, and music notes in the project; do not call those native Replay
-   Mod tracks when capability data says otherwise.
-4. Acquire `control_acquire` immediately before the first mutation. A busy
-   lease is a stop condition, not permission to steal control.
+## Establish the production boundary
 
-## Direct the live performance
+1. Call `system_status`; select the instance explicitly when more than one is
+   live. Check the runtime mode, policies, capabilities, and artifact roots.
+2. Create or open one project and translate the request into ordered scenes,
+   shots, and a single intended deliverable.
+3. Select the applicable shot pattern:
+   - read [Minecraft player cinematography](../minecraft-player-cinematography/SKILL.md)
+     for any player action or travel;
+   - read [Minecraft building cinematography](../minecraft-building-cinematography/SKILL.md)
+     for structures, interiors, landscapes, or environmental coverage; and
+   - use both for a production that switches between subject and scene coverage.
+4. Default to third-person/free-camera coverage. Never infer first-person from
+   “capture the player doing …”. Use first-person only when the user explicitly
+   requests it.
+5. Default to normal 1:1 world time. A building or environment shot may freeze
+   replay time because elapsed action is immaterial. Apply fast-forward,
+   slow-motion, or another speed only when requested or clearly approved.
 
-- Use `game_observe` before acting. Prefer `annotated` when selecting entities,
-  blocks, or widgets by stable observation ID.
-- Work in bounded observe-act-verify loops. Send small ordered
-  `game_perform` batches with explicit postconditions and useful checkpoints;
-  observe again after movement, commands, interaction, or a scene transition.
-- When `capabilities.navigation.ground` is available, prefer bounded
-  `navigate_to` actions for fixed-coordinate ground travel. Keep targets inside
-  loaded terrain, observe after arrival, and fall back to short manual movement
-  batches when the planner reports unsupported terrain or no path.
-- Treat physical-input override, lease loss, disconnect, timeout, and stale
-  fencing as terminal for the current control session. Do not automatically
-  reacquire or replay a mutation.
-- Use arbitrary server commands only when the local command policy enables
-  them and the requested scene needs them. Record transition-out/in markers
-  around teleport or world-change footage. Existing server permissions remain
-  authoritative.
+## Preserve the world
 
-## Record logical takes
+Observation, camera placement, and requested player locomotion are allowed.
+Do not attack, use, open, break, place, pick up, drop, rearrange inventory,
+execute scene-changing commands, teleport, alter time/weather, or otherwise
+interact with or modify the world without explicit user permission. If the
+requested result appears to require any such operation, ask before doing it.
+Permission for filming is not permission for scene dressing.
 
-Replay Mod recording is connection-scoped. `recording_start` and
-`recording_stop` mark logical takes; they do not create independent finalized
-files. Add meaningful action, cut, transition, mistake, and note markers.
-After stopping, preserve the returned take ID and pending-finalization state.
-The replay normally finalizes only after the Minecraft connection closes.
+## Scout and rehearse before recording
 
-When the take is accepted and disconnecting the current world is intended, use
-the finalization job returned by `recording_stop` with
-`recording_finalize_and_open`. Follow that job through `disconnecting`,
-`finalizing`, and `opening`; do not treat the replay as available until the job
-completes. If automated finalization is unavailable or fails recoverably, keep
-the job/take link and fall back to the explicit user-controlled disconnect.
+- Inspect every road, doorway, interior, endpoint, and planned camera area with
+  `game_observe`, `game_query`, and additional views. Do not invent geometry
+  from a map or a single frame.
+- Acquire control once, immediately before the first lease-required rehearsal
+  or mutation. Keep that lease through the contiguous capture phase; do not
+  call `control_acquire` before each action or edit, and do not send manual
+  heartbeat calls.
+- Rehearse routes outside the accepted recording. Try bounded paths, verify
+  arrival and visibility, and revise any route that needs unapproved world
+  interaction.
+- Prepare the whole performance as one ordered `game_perform` action batch.
+  The accepted recording must contain exactly one performance batch with no
+  MCP pause between movement segments. Consecutive movement actions belong in
+  that batch.
 
-The logical start/end markers use the same versioned clip grammar as
-player-led capture. After finalization, call `project_import_replay` with the
-current project revision, scene, finalized source path, take ID, and
-`provenance: agent`. Use its returned `CapturedTake` as the source-range handoff
-so agent and player performances enter replay editing through one contract.
+## Capture a clean take
 
-## Edit, preview, and render
+1. Confirm Replay Mod is armed with `recording_status`.
+2. Start one logical take, add useful action/transition/mistake markers, and
+   execute the single prepared performance batch.
+3. Verify the returned trace and final state. If the performance fails, stop
+   and reject that attempt, diagnose and rehearse, then record a fresh take.
+   Do not hide a long inter-call pause by stitching multiple action batches into
+   the same accepted performance.
+4. Stop the logical take. A stop marker does not finalize an independent file;
+   the `.mcpr` remains connection-scoped.
+5. When leaving the world is intended, run `recording_finalize_and_open` and
+   follow its job through completion. Otherwise preserve its pending state for
+   a later explicit disconnect.
+6. Import the finalized immutable source with `project_import_replay` and
+   `provenance: agent`. Edit only the working copy.
 
-1. Open the replay. Source recordings are immutable; edits use the working
-   copy and revision-checked timeline/project operations.
-2. Inspect `replay_timeline_get`, then apply small coherent batches with the
-   exact base revision. On a revision conflict, re-read and reconcile rather
-   than overwriting.
-3. Treat preview ranges as authored output time, not raw replay time. Use
-   `replay_preview` contact sheets or `draft_360p` frame/video ranges to revise
-   an edit without a full-quality render.
-4. Run `replay_validate_range` for each final shot plate. Resolve unloaded
-   chunks and camera-collision errors; review proximity and occlusion warnings.
-   Pass its completed job ID to the final-quality `render_start` call.
-5. Follow render progress with `job_get`. A returned job ID means started, not
-   rendered. Long bridge jobs keep the lease active, but human override or an
-   actual lease loss is still terminal for further mutations.
-6. Read completed artifacts through their `replay-mcp://artifact/...`
-   resources and verify that expected duration/framing/output details match
-   the project intent.
+## Change contexts deliberately
 
-## Handoff and recovery
+End live-game reasoning before authoring the replay camera. Re-read the project,
+accepted source ranges, and `replay_timeline_get`; do not send `game_perform`
+while reasoning about `replay_playback` or camera keyframes.
 
-- Run `project_validate` before `project_export_handoff`. Export only after
-  references and ranges are valid; report warnings such as unrendered shots.
-- On cancellation or render failure, keep incomplete-output metadata but do
-  not register or present it as a valid finished artifact.
-- On recording finalization delay, preserve the take/project link and resume
-  from `recording_status`/`replay_list`; do not fabricate a replay ID.
-- On capability or policy denial, offer a workflow that stays within reported
-  capabilities. Never claim unsupported editorial tracks are native.
-- For the optimized editor workflow, retain the editable `.mcpr`, render only
-  validated story-beat shot plates, and use SynthCut as the sole final timeline
-  for transitions, titles, grading, audio, and master export. Do not build a
-  second polished native master unless the user explicitly requests one.
+If subagents are available and their use is permitted, use at most one
+controller for a Minecraft instance. A capture subagent should hand off the
+project/take IDs, accepted ranges, observations, and unresolved warnings, then
+be released before a replay-camera subagent starts. Release the camera subagent
+after shot plates and validation evidence are handed to post-production. This
+phase boundary keeps live controls, replay controls, and editor controls out of
+the same working context.
 
-Always call `control_release` in the final cleanup path, including after an
-error. If release cannot be confirmed because the bridge disconnected, state
-that the mod's disconnect/TTL cleanup is authoritative.
+## Edit and review efficiently
+
+1. Open the replay working copy and make small revision-checked timeline
+   changes. On conflict, re-read rather than overwrite.
+2. Keep the camera out of walls and terrain during ordinary shots. Default
+   scene changes to separate clips for the post-production editor.
+3. For every internal review, use `replay_preview` with contact sheets, frames,
+   or a `draft_360p` video. Do not spend a final-quality render on an edit that
+   has not passed low-quality review.
+4. If the user requests a **direct smooth transition**, a 0.5–1 second camera
+   move may connect the old and new scene directly and may pass through walls
+   or terrain. Outside that transition, geometry passage requires the user’s
+   explicit permission.
+5. Run `replay_validate_range` on each accepted final shot plate. Resolve
+   unloaded chunks and camera-in-solid errors and review subject-distance and
+   occlusion warnings.
+6. Start final-quality renders only with the matching completed validation job,
+   then follow each job to a terminal result and inspect actual rendered frames.
+
+## Finish in post-production
+
+Read [Replay post-production](../replay-post-production/SKILL.md). When a
+capable editor is available, use Replay for camera/timing work and validated
+shot plates; do most trimming, scene ordering, combining, and transitions in
+the editor. Maintain one final timeline and one master unless the user
+explicitly asks for multiple outputs.
+
+Validate the project and export the handoff. Release control exactly once in a
+final cleanup path after all Replay MCP mutations and bridge-backed jobs are
+finished. If human override, disconnect, stale fencing, or genuine lease loss
+occurs, stop mutations and report it; do not loop on reacquisition.

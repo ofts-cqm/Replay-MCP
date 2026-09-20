@@ -1,7 +1,7 @@
 {
   "name": "replay-director",
-  "version": "0.1.0+codex.20260919151553",
-  "description": "Capture player-led or agent-directed Minecraft performance, then edit, visually verify, render, and hand off Replay Mod footage through Replay MCP.",
+  "version": "0.1.0+codex.20260920014413",
+  "description": "Plan and capture player-led or agent-directed Minecraft productions, author cinematic Replay Mod shots, verify renders, and finish one multi-scene video.",
   "author": {
     "name": "OFTS CQM"
   },
@@ -9,15 +9,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Replay Director",
-    "shortDescription": "Capture, direct, and render Minecraft replays safely.",
-    "longDescription": "Local player-led and agent-directed filmmaking workflows with lease-free clip import, grounded visual observation, Replay Mod timelines, previews, final renders, and editor-neutral handoffs.",
+    "shortDescription": "Direct, shoot, and finish Minecraft replay films.",
+    "longDescription": "Production-ready player-led and agent-directed workflows with self-contained Replay MCP guidance, player and building cinematography, lease-safe control, low-cost review, verified shot plates, and post-production handoff.",
     "developerName": "OFTS CQM",
     "category": "Developer Tools",
     "capabilities": [
       "Interactive",
       "Write"
     ],
-    "defaultPrompt": "Capture or direct a Minecraft scene and turn its replay clips into verified rendered shots."
+    "defaultPrompt": "Plan one Minecraft video, capture its scenes, author cinematic replay shots, review them efficiently, and finish a verified master."
   },
   "mcpServers": "./.mcp.json"
 }
