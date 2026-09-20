@@ -103,8 +103,9 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     void localClipEnd() { localClip(LocalClipAction.END); }
     void localClipRevoke() { localClip(LocalClipAction.REVOKE); }
 
-    String localClipHudStatus() {
-        if (localClips.isActive()) return "clip ACTIVE " + localClips.activeClipId().substring(0, 8);
+    String localClipHudStatus(String endKey, String revokeKey) {
+        if (localClips.isActive()) return "clip ACTIVE " + localClips.activeClipId().substring(0, 8)
+                + " | " + endKey + " to stop, " + revokeKey + " to cancel";
         return switch (localClips.lastTransition().outcome()) {
             case ACCEPTED -> "clip accepted";
             case REVOKED -> "clip revoked";
@@ -1028,11 +1029,11 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             var handler = replayHandler(); if (handler == null) throw new BridgeException(BridgeError.INVALID_MODE, "no replay is loaded");
             var sender = handler.getReplaySender(); String operation = params.get("operation").getAsString();
             switch (operation) {
-                case "seek" -> { long time = params.get("time_us").getAsLong() / 1_000L; if (time < 0 || time > handler.getReplayDuration()) throw new BridgeException(BridgeError.INVALID_REQUEST, "seek time is outside the replay"); sender.jumpToTime(Math.toIntExact(time)); }
+                case "seek" -> { long time = params.get("time_us").getAsLong() / 1_000L; if (time < 0 || time > handler.getReplayDuration()) throw new BridgeException(BridgeError.INVALID_REQUEST, "seek time is outside the replay"); ReplaySeekController.seek(sender, Math.toIntExact(time)); }
                 case "play" -> sender.setReplaySpeed(playbackSpeed(params.has("speed") ? params.get("speed").getAsDouble() : 1.0));
                 case "pause" -> sender.setReplaySpeed(0);
                 case "speed" -> sender.setReplaySpeed(playbackSpeed(params.get("speed").getAsDouble()));
-                case "step" -> { long delta = params.has("delta_us") ? params.get("delta_us").getAsLong() / 1_000L : 50L; sender.jumpToTime((int) Math.max(0, Math.min(handler.getReplayDuration(), sender.currentTimeStamp() + delta))); }
+                case "step" -> { long delta = params.has("delta_us") ? params.get("delta_us").getAsLong() / 1_000L : 50L; ReplaySeekController.seek(sender, (int) Math.max(0, Math.min(handler.getReplayDuration(), sender.currentTimeStamp() + delta))); }
                 case "spectate" -> handler.spectateEntity(resolveEntity(params));
                 case "detach" -> handler.spectateCamera();
                 default -> throw new BridgeException(BridgeError.INVALID_REQUEST, "unknown playback operation");
@@ -1058,9 +1059,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             int replayMs = timeline.getTimePath().getValue(TimestampProperty.PROPERTY, outputMs)
                     .orElseThrow(() -> new BridgeException(BridgeError.INVALID_REQUEST, "output time is outside the authored replay-time path"));
             var sender = handler.getReplaySender();
-            sender.setSyncModeAndWait();
-            sender.jumpToTime(Math.max(0, replayMs - 1_000));
-            sender.sendPacketsTill(replayMs);
+            ReplaySeekController.seekSettled(sender, replayMs, 1_000);
             timeline.getTimeline().applyToGame(outputMs, handler);
             timeline.getTimeline().applyToGame(outputMs, handler);
             JsonObject result = new JsonObject(); result.addProperty("output_time_us", outputMs * 1_000L);

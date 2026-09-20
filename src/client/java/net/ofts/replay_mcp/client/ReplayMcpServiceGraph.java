@@ -8,6 +8,7 @@ import net.ofts.replay_mcp.artifact.ArtifactStore;
 import net.ofts.replay_mcp.audit.AuditWriter;
 import net.ofts.replay_mcp.bridge.BridgeRouter;
 import net.ofts.replay_mcp.config.ReplayMcpConfig;
+import net.ofts.replay_mcp.control.PauseOnLostFocusOverride;
 import net.ofts.replay_mcp.discovery.DiscoveryPublisher;
 import net.ofts.replay_mcp.discovery.InstanceDescriptor;
 import net.ofts.replay_mcp.lease.DirectorLeaseManager;
@@ -36,6 +37,7 @@ public final class ReplayMcpServiceGraph implements AutoCloseable {
     private final ArtifactStore artifacts;
     private final BridgeWebSocketServer server;
     private final DiscoveryPublisher discovery;
+    private final PauseOnLostFocusOverride pauseOnLostFocus = new PauseOnLostFocusOverride();
 
     private ReplayMcpServiceGraph(Path gameDir, ReplayMcpConfig config, MinecraftBridgeAdapter adapter,
                                   OperationRegistry operations, DirectorLeaseManager leases,
@@ -86,7 +88,13 @@ public final class ReplayMcpServiceGraph implements AutoCloseable {
     public void emergencyStop() { operations.cancelAll(); adapter.releaseAllInputs(); leases.emergencyStop(); }
     public void releaseInputs() { adapter.releaseAllInputs(); }
     public void humanOverride() { if (config.physicalInputRevokesLease) leases.humanOverride(); }
-    public void tick() { leases.status(); adapter.tickActions(); adapter.tickLocalClips(); }
+    public void tick() {
+        boolean controlActive = leases.status().isPresent();
+        var options = net.minecraft.client.Minecraft.getInstance().options;
+        options.pauseOnLostFocus = pauseOnLostFocus.update(controlActive, options.pauseOnLostFocus);
+        adapter.tickActions();
+        adapter.tickLocalClips();
+    }
     public void localClipStart() { adapter.localClipStart(); }
     public void localClipEnd() { adapter.localClipEnd(); }
     public void localClipRevoke() { adapter.localClipRevoke(); }
@@ -95,15 +103,17 @@ public final class ReplayMcpServiceGraph implements AutoCloseable {
         catch (IOException ignored) { }
     }
 
-    public String hudStatus() {
+    public String hudStatus(String clipEndKey, String clipRevokeKey) {
         if (!config.bridgeEnabled || server == null) return "Replay MCP: bridge disabled (restart after enabling)";
         String control = leases.status().map(l -> "directed by " + l.ownerLabel()).orElse("no director");
-        return "Replay MCP: " + control + " | " + adapter.localClipHudStatus();
+        return "Replay MCP: " + control + " | " + adapter.localClipHudStatus(clipEndKey, clipRevokeKey);
     }
 
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
         operations.cancelAll(); adapter.releaseAllInputs();
+        var options = net.minecraft.client.Minecraft.getInstance().options;
+        options.pauseOnLostFocus = pauseOnLostFocus.update(false, options.pauseOnLostFocus);
         if (server != null) server.close();
         if (discovery != null) try { discovery.close(); } catch (IOException ignored) { }
         adapter.close();

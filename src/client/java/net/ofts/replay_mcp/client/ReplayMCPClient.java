@@ -51,7 +51,9 @@ public class ReplayMCPClient implements ClientModInitializer {
         });
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("replay_mcp", "status"), (graphics, tick) -> {
             if (services == null) return;
-            String text = services.hudStatus();
+            String text = services.hudStatus(
+                    clipEnd.getTranslatedKeyMessage().getString(),
+                    clipRevoke.getTranslatedKeyMessage().getString());
             int width = clientFontWidth(text) + 8;
             graphics.fill(3, 3, 3 + width, 17, 0x99000000);
             graphics.text(net.minecraft.client.Minecraft.getInstance().font, text, 7, 6, 0xFFE0E0E0);

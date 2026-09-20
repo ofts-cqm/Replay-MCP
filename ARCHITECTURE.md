@@ -1162,6 +1162,9 @@ state, and no automatic reacquisition after lease loss.
   read-only observers may connect concurrently.
 - The in-game overlay has an emergency stop that cancels actions and releases
   all held inputs immediately.
+- While a director lease is active, the mod temporarily disables Minecraft's
+  pause-on-focus-loss behavior so unattended editing and rendering can continue;
+  it restores the user's previous setting when control ends.
 - The agent cannot use a tool to relax its own security configuration.
 - Commands use only the logged-in player's permissions; Replay MCP has no
   server-console access.
