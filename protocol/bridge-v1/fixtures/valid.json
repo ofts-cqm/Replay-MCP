@@ -53,5 +53,21 @@
   {
     "schema": "render.schema.json",
     "value": {"job_id": "render-1", "status": "running", "progress": 0.5, "frames_done": 15, "total_frames": 30}
+  },
+  {
+    "schema": "spatial-map.schema.json",
+    "value": {"representation": "surface", "bounds": {"min_x": -17, "max_x": 31, "min_y": -64, "max_y": 192, "min_z": -1, "max_z": 33}, "cell_size": 16, "surface_mode": "motion_blocking_no_leaves", "material_mix_limit": 2, "require_complete": false}
+  },
+  {
+    "schema": "spatial-map.schema.json",
+    "value": {"representation": "volume", "bounds": {"min_x": -4, "max_x": 4, "min_y": 64, "max_y": 72, "min_z": -4, "max_z": 4}, "cell_size": 2, "material_mix_limit": 1, "require_complete": true, "refines_map_id": "parent-map", "fallback_reason": "tight_clearance"}
+  },
+  {
+    "schema": "spatial-map.schema.json",
+    "value": {"map_id": "map-1", "instance_id": "11111111-1111-4111-8111-111111111111", "representation": "surface", "dimension": "minecraft:overworld", "runtime_mode": "live_idle", "requested_bounds": {"min_x": -17, "max_x": 31, "min_y": -64, "max_y": 192, "min_z": -1, "max_z": 33}, "effective_bounds": {"min_x": -32, "max_x": 32, "min_y": -64, "max_y": 192, "min_z": -16, "max_z": 48}, "cell_size": 16, "grid": {"origin": {"x": -32, "y": -64, "z": -16}, "dimensions": {"x": 4, "y": 1, "z": 4}}, "palette": ["minecraft:grass_block"], "capture_start_tick": 80, "capture_end_tick": 80, "consistency": "single_tick", "coverage": {"state": "complete"}, "work": {"source_columns": 4096}, "rows": [], "unavailable_boxes": [], "response_bytes": 1024}
+  },
+  {
+    "schema": "spatial-map.schema.json",
+    "value": {"surface": true, "volume": true, "loaded_chunks_only": true, "surface_cell_sizes": [4, 8, 16, 32], "surface_fallback_cell_sizes": [2], "volume_cell_sizes": [4, 8, 16, 32], "volume_fallback_cell_sizes": [2], "surface_modes": ["world_surface", "motion_blocking_no_leaves"], "default_surface_mode": "motion_blocking_no_leaves", "material_mix_limits": [1, 2, 3], "limits": {"ordinary_surface": {"max_result_cells": 4096, "max_source_columns": 262144, "max_axis_span": 2048, "max_response_bytes": 262144}}, "partial_coverage": true, "multi_tick": true}
   }
 ]

@@ -14,6 +14,7 @@ export interface FakeBridge {
 
 interface FakeBridgeOptions {
   heartbeatFailures?: number;
+  spatialMap?: boolean;
 }
 
 export async function createFakeBridge(gameDir: string, options: FakeBridgeOptions = {}): Promise<FakeBridge> {
@@ -50,7 +51,7 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
   const address = wss.address();
   if (!address || typeof address === "string") throw new Error("fake bridge did not bind TCP");
 
-  const readOnly = new Set(["system.hello", "system.status", "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.query", "recording.status", "replay.list", "replay.metadata", "timeline.get", "render.presets", "render.preflight", "test.timeout"]);
+  const readOnly = new Set(["system.hello", "system.status", "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.query", "observation.spatial_map", "recording.status", "replay.list", "replay.metadata", "timeline.get", "render.presets", "render.preflight", "test.timeout"]);
   wss.on("connection", (socket) => {
     let hello = false;
     socket.on("close", () => { if (leaseOwner === socket) { leaseOwner = undefined; leaseId = ""; fence++; } });
@@ -88,6 +89,33 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
         case "observation.framebuffer": success({ ...artifact(pngPath, png, "image/png"), view: params.view ?? "player", capture_tick: 80, snapshot: { synchronized: true, tick: 80, player: { x: 1, y: 64, z: 2 } } }); break;
         case "observation.motion_burst": success({ requested_frames: params.frames ?? 2, dropped_frames: 0, view: params.view ?? "clean", frames: [artifact(pngPath, png, "image/png")] }); break;
         case "observation.query": success({ kind: params.kind, tick: 80, player: { x: 1, y: 64, z: 2 } }); break;
+        case "observation.spatial_map": {
+          const bounds = params.bounds as Record<string, number>;
+          const cellSize = Number(params.cell_size);
+          const alignDown = (value: number) => Math.floor(value / cellSize) * cellSize;
+          const alignUp = (value: number) => Math.ceil(value / cellSize) * cellSize;
+          const volume = params.representation === "volume";
+          const effective = {
+            min_x: alignDown(bounds.min_x!), max_x: alignUp(bounds.max_x!),
+            min_y: alignDown(bounds.min_y!), max_y: alignUp(bounds.max_y!),
+            min_z: alignDown(bounds.min_z!), max_z: alignUp(bounds.max_z!),
+          };
+          success({
+            map_id: crypto.randomUUID(), instance_id: instanceId, representation: params.representation,
+            dimension: "minecraft:overworld", runtime_mode: "live_idle", requested_bounds: bounds,
+            effective_bounds: effective, cell_size: cellSize, material_mix_limit: params.material_mix_limit ?? 1,
+            grid: { origin: { x: effective.min_x, y: effective.min_y, z: effective.min_z }, cell_size: cellSize,
+              dimensions: { x: (effective.max_x - effective.min_x) / cellSize, y: volume ? (effective.max_y - effective.min_y) / cellSize : 1, z: (effective.max_z - effective.min_z) / cellSize },
+              column_order: "increasing_z_then_x", vertical_order: "increasing_y" },
+            palette: [], capture_start_tick: 80, capture_end_tick: 80, consistency: "single_tick", atomic: true,
+            coverage: { state: "complete", loaded_source_units: 1, unavailable_source_units: 0 },
+            work: { aggregate_cells: 1, [volume ? "logical_voxels" : "source_columns"]: 1, scan_slices: 1, client_thread_us: 20, max_slice_us: 20, hard_slice_overruns: 0 },
+            ...(volume ? { columns: [], unavailable_boxes: [] } : { surface_mode: params.surface_mode, rows: [], unavailable_boxes: [] }),
+            ...(cellSize === 2 ? { refines_map_id: params.refines_map_id, fallback_reason: params.fallback_reason } : {}),
+            response_bytes: 512,
+          });
+          break;
+        }
         case "action.start_batch": {
           const actions = Array.isArray(params.actions) ? params.actions as Record<string, unknown>[] : [];
           success({ trace: actions.map((action) => ({ kind: action.kind, status: "completed", ...(action.kind === "navigate_to" ? { navigation: { native_node_count: 4, replans: 0, reached: true } } : {}) })), final_state: { tick: 81 } });
@@ -152,12 +180,12 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
   function status(extra: Record<string, unknown> = {}) {
     return {
       minecraft_version: "26.2", replay_mod_version: "26.2-2.6.27", connected: true, runtime_mode: "live_idle",
-      capabilities: { structured_observation: true, framebuffer_capture: true, player_clip_capture: true, normalized_replay_markers: true, native_timeline: true, native_fov: false, native_look_at: false, navigation: { ground: true, engine: "minecraft_walk_node_evaluator", loaded_chunks_only: true, max_distance: 128, unsupported_travel_modes: ["swimming", "flight", "vehicles"] } },
+      capabilities: { structured_observation: true, framebuffer_capture: true, player_clip_capture: true, normalized_replay_markers: true, native_timeline: true, native_fov: false, native_look_at: false, navigation: { ground: true, engine: "minecraft_walk_node_evaluator", loaded_chunks_only: true, max_distance: 128, unsupported_travel_modes: ["swimming", "flight", "vehicles"] }, ...(options.spatialMap === false ? {} : { spatial_map: spatialMapCapability() }) },
       lease: leaseOwner ? { held: true, epoch: fence, owner_label: "test" } : { held: false, epoch: fence },
       lease_policy: { ttl_ms: 15_000, heartbeat_interval_ms: 1_000, idle_ceiling_ms: 300_000 },
       command_policy: { enabled: false, locally_managed: true },
       flight_policy: { automation_enabled: true, requires_granted_ability: true, currently_granted: true },
-      allowed_artifact_roots: [artifacts], time_precision_us: 1_000, ...extra,
+      allowed_artifact_roots: [artifacts], time_precision_us: 1_000, dimension: "minecraft:overworld", ...extra,
     };
   }
 
@@ -172,5 +200,23 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
   return {
     instanceId, gameDir, port: address.port, calls,
     async close() { for (const client of wss.clients) client.terminate(); await new Promise<void>((resolve) => wss.close(() => resolve())); },
+  };
+}
+
+function spatialMapCapability(): Record<string, unknown> {
+  return {
+    surface: true, volume: true, loaded_chunks_only: true,
+    surface_cell_sizes: [4, 8, 16, 32], surface_fallback_cell_sizes: [2],
+    volume_cell_sizes: [4, 8, 16, 32], volume_fallback_cell_sizes: [2],
+    surface_modes: ["world_surface", "motion_blocking_no_leaves"], default_surface_mode: "motion_blocking_no_leaves",
+    material_mix_limits: [1, 2, 3], ordinary_target_cells: 1024, ordinary_max_result_cells: 4096,
+    fallback_max_result_cells: 512, max_response_bytes: 262144, fallback_max_response_bytes: 65536,
+    partial_coverage: true, multi_tick: true, max_map_age_ms: 600000,
+    limits: {
+      ordinary_surface: { max_result_cells: 4096, max_source_columns: 262144, max_axis_span: 2048, max_response_bytes: 262144 },
+      ordinary_volume: { max_result_cells: 4096, max_logical_voxels: 2097152, max_axis_span: 256, max_response_bytes: 262144 },
+      surface_fallback: { max_result_cells: 512, max_source_columns: 2048, max_axis_span: 64, max_response_bytes: 65536 },
+      volume_fallback: { max_result_cells: 512, max_logical_voxels: 4096, max_axis_span: 32, max_response_bytes: 65536 },
+    },
   };
 }

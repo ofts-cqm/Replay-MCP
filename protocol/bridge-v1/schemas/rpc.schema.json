@@ -56,7 +56,7 @@
       "additionalProperties": false,
       "required": ["code", "message", "data"],
       "properties": {
-        "code": {"enum": ["protocol_mismatch", "unauthenticated", "invalid_request", "capability_unavailable", "invalid_mode", "control_required", "stale_fence", "control_busy", "conflict", "policy_denied", "timeout", "cancelled", "internal_error", "recording_not_armed"]},
+        "code": {"enum": ["protocol_mismatch", "unauthenticated", "invalid_request", "capability_unavailable", "invalid_mode", "query_too_large", "outside_loaded_area", "no_loaded_coverage", "control_required", "stale_fence", "control_busy", "conflict", "policy_denied", "timeout", "cancelled", "internal_error", "recording_not_armed"]},
         "message": {"type": "string"},
         "data": {"type": "object"}
       }

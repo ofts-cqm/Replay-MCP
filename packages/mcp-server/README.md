@@ -10,6 +10,12 @@ Ground pathfinding is available as the `navigate_to` action inside
 optional sprint flag; capability negotiation reports whether the connected mod
 supports Minecraft-native ground planning.
 
+Regional camera scouting is available through
+`game_query({ kind: "spatial_map", ... })` when the connected mod advertises
+`capabilities.spatial_map`. Surface and volume maps inspect loaded client chunks
+without taking the director lease or capturing an image. Size-2 refinement is
+intentionally gated by a recent containing size-4 result and an audited reason.
+
 ```sh
 replay-mcp-server --data-dir ./replay-mcp-data --game-dir ~/.minecraft
 ```

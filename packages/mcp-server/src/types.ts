@@ -33,7 +33,8 @@ export type InstanceDescriptor = z.infer<typeof InstanceDescriptorSchema>;
 
 export const BridgeErrorCodeSchema = z.enum([
   "protocol_mismatch", "unauthenticated", "invalid_request",
-  "capability_unavailable", "invalid_mode", "control_required",
+  "capability_unavailable", "invalid_mode", "query_too_large",
+  "outside_loaded_area", "no_loaded_coverage", "control_required",
   "stale_fence", "control_busy", "conflict", "policy_denied", "timeout",
   "cancelled", "internal_error", "recording_not_armed",
 ]);

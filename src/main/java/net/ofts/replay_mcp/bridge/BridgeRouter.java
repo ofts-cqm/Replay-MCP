@@ -20,7 +20,7 @@ import java.util.Set;
 public final class BridgeRouter {
     private static final Set<String> READ_ONLY = Set.of(
             "system.hello", "system.capabilities", "system.status", "system.health",
-            "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.snapshot", "observation.query",
+            "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.snapshot", "observation.query", "observation.spatial_map",
             "recording.status", "replay.list", "replay.metadata", "timeline.get", "timeline.validate",
             "render.presets", "render.preflight", "action.validate");
     private static final Set<String> LOCAL_ONLY = Set.of("lease.human_revoke");
@@ -107,7 +107,11 @@ public final class BridgeRouter {
             operations.check(operation);
             if (request.method().equals("action.start_batch")) actions.validate(request.params(), adapter.flightGranted());
             if (request.method().equals("render.start") || request.method().equals("render.still")) renders.validate(request.params());
-            return adapter.invoke(request.method(), request.params(), operation.token());
+            JsonElement result = adapter.invoke(request.method(), request.params(), operation.token());
+            if (request.method().equals("observation.spatial_map") && result.isJsonObject()) {
+                result.getAsJsonObject().addProperty("instance_id", instanceId);
+            }
+            return result;
         } finally {
             operations.complete(operation.id());
         }

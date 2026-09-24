@@ -9,5 +9,8 @@
   {"schema": "action.schema.json", "value": {"request_id": "navigate-missing", "actions": [{"kind": "navigate_to", "x": 1, "y": 64}]}},
   {"schema": "action.schema.json", "value": {"request_id": "navigate-tolerance", "actions": [{"kind": "navigate_to", "x": 1, "y": 64, "z": 1, "tolerance": 8}]}},
   {"schema": "timeline.schema.json", "value": {"revision": "", "tracks": []}},
-  {"schema": "render.schema.json", "value": {"job_id": "", "status": "done", "progress": 2}}
+  {"schema": "render.schema.json", "value": {"job_id": "", "status": "done", "progress": 2}},
+  {"schema": "spatial-map.schema.json", "value": {"representation": "surface", "bounds": {"min_x": 0, "max_x": 16, "min_y": 64, "max_y": 80, "min_z": 0, "max_z": 16}, "cell_size": 1}},
+  {"schema": "spatial-map.schema.json", "value": {"representation": "volume", "bounds": {"min_x": 0, "max_x": 8, "min_y": 64, "max_y": 72, "min_z": 0, "max_z": 8}, "cell_size": 2}},
+  {"schema": "spatial-map.schema.json", "value": {"representation": "surface", "bounds": {"min_x": 0, "max_x": 8, "min_y": 64, "max_y": 72, "min_z": 0, "max_z": 8}, "cell_size": 2, "refines_map_id": "parent", "fallback_reason": "tight_clearance"}}
 ]

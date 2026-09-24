@@ -28,6 +28,21 @@
               "items": {"enum": ["swimming", "flight", "vehicles"]}
             }
           }
+        },
+        "spatial_map": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["surface", "volume", "loaded_chunks_only", "surface_cell_sizes", "surface_fallback_cell_sizes", "volume_cell_sizes", "volume_fallback_cell_sizes", "limits"],
+          "properties": {
+            "surface": {"type": "boolean"},
+            "volume": {"type": "boolean"},
+            "loaded_chunks_only": {"type": "boolean"},
+            "surface_cell_sizes": {"type": "array", "items": {"type": "integer"}},
+            "surface_fallback_cell_sizes": {"type": "array", "items": {"type": "integer"}},
+            "volume_cell_sizes": {"type": "array", "items": {"type": "integer"}},
+            "volume_fallback_cell_sizes": {"type": "array", "items": {"type": "integer"}},
+            "limits": {"type": "object"}
+          }
         }
       }
     },

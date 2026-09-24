@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
+import net.ofts.replay_mcp.observation.SpatialMapContract;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -23,7 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 final class BridgeFixtureContractTest {
     private static final Set<String> ERRORS = Set.of(
             "protocol_mismatch", "unauthenticated", "invalid_request", "capability_unavailable",
-            "invalid_mode", "control_required", "stale_fence", "control_busy", "conflict",
+            "invalid_mode", "query_too_large", "outside_loaded_area", "no_loaded_coverage",
+            "control_required", "stale_fence", "control_busy", "conflict",
             "policy_denied", "timeout", "cancelled", "internal_error", "recording_not_armed");
 
     @Test
@@ -58,6 +60,7 @@ final class BridgeFixtureContractTest {
             case "action.schema.json" -> validateAction(object);
             case "timeline.schema.json" -> validateTimeline(object);
             case "render.schema.json" -> validateRender(object);
+            case "spatial-map.schema.json" -> validateSpatialMap(object);
             default -> throw new IllegalArgumentException("unknown fixture schema " + schema);
         }
     }
@@ -144,6 +147,25 @@ final class BridgeFixtureContractTest {
         requiredString(value, "job_id");
         if (!Set.of("queued", "running", "completed", "failed", "cancelled").contains(requiredString(value, "status"))) throw new IllegalArgumentException();
         if (value.has("progress") && (value.get("progress").getAsDouble() < 0 || value.get("progress").getAsDouble() > 1)) throw new IllegalArgumentException();
+    }
+
+    private static void validateSpatialMap(JsonObject value) {
+        if (value.has("bounds") && value.has("representation") && !value.has("map_id")) {
+            SpatialMapContract.parse(value, -64, 320); return;
+        }
+        if (value.has("map_id")) {
+            requiredString(value, "map_id"); java.util.UUID.fromString(requiredString(value, "instance_id"));
+            if (!Set.of("surface", "volume").contains(requiredString(value, "representation"))) throw new IllegalArgumentException();
+            for (String key : new String[]{"requested_bounds", "effective_bounds", "grid", "coverage", "work"})
+                if (!value.has(key) || !value.get(key).isJsonObject()) throw new IllegalArgumentException(key);
+            if (!value.has("palette") || !value.get("palette").isJsonArray() || !value.has("unavailable_boxes") || !value.get("unavailable_boxes").isJsonArray()) throw new IllegalArgumentException();
+            return;
+        }
+        if (!value.has("surface") || !value.get("surface").getAsBoolean() || !value.has("volume") || !value.get("volume").getAsBoolean()
+                || !value.has("loaded_chunks_only") || !value.get("loaded_chunks_only").getAsBoolean()) throw new IllegalArgumentException();
+        for (String key : new String[]{"surface_cell_sizes", "surface_fallback_cell_sizes", "volume_cell_sizes", "volume_fallback_cell_sizes", "surface_modes", "material_mix_limits"})
+            if (!value.has(key) || !value.get(key).isJsonArray()) throw new IllegalArgumentException(key);
+        if (!value.has("limits") || !value.get("limits").isJsonObject()) throw new IllegalArgumentException("limits");
     }
 
     private static String requiredString(JsonObject object, String key) {

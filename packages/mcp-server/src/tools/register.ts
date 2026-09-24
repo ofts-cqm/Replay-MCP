@@ -9,11 +9,18 @@ import type { JobRecord } from "../jobs/store.js";
 import { ReplayMcpRuntime, objectResult } from "../runtime.js";
 import { SIDECAR_VERSION } from "../types.js";
 import { capturedShotId, capturedTakeId, parseClipMarkers, verifyReplaySource, type CapturedTake } from "../capture/importer.js";
+import { SpatialMapRegistry, spatialMapQuerySchema, type SpatialMapArgs } from "../spatial/maps.js";
 
 const instance = { instance_id: z.uuid().optional().describe("Target instance; omit only when exactly one instance is live") };
 const loose = z.object(instance).catchall(z.unknown());
 const requestId = z.string().min(1).max(128).optional();
 const timeout = z.number().int().min(250).max(300_000).optional();
+const regularGameQuerySchema = z.object({
+  ...instance, kind: z.enum(["player", "world", "entities", "blocks", "inventory", "screen", "scoreboard", "chat_or_system_messages", "target"]),
+  bounds: z.record(z.string(), z.number()).optional(), distance: z.number().positive().max(256).optional(), type: z.string().optional(),
+  name: z.string().optional(), tags: z.array(z.string()).optional(), observation_ids: z.array(z.string()).optional(), limit: z.number().int().min(1).max(4096).optional(),
+});
+const gameQuerySchema = z.union([regularGameQuerySchema, spatialMapQuerySchema]);
 const gameAction = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]*$/) }).catchall(z.unknown()).superRefine((action, context) => {
   if (action.kind !== "navigate_to") return;
   for (const coordinate of ["x", "y", "z"] as const) {
@@ -43,6 +50,7 @@ type ToolContent =
 type ToolResult = { content: ToolContent[]; structuredContent: Record<string, unknown>; isError?: boolean };
 
 export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): void {
+  const spatialMaps = new SpatialMapRegistry();
   server.registerTool("system_status", {
     title: "Replay MCP system status",
     description: "Report sidecar configuration, live Minecraft instances, capabilities, policies, runtime modes, and active jobs.",
@@ -190,12 +198,14 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
 
   server.registerTool("game_query", {
     title: "Query structured game state", description: "Read precise bounded state without capturing another image or loading distant chunks.",
-    inputSchema: z.object({
-      ...instance, kind: z.enum(["player", "world", "entities", "blocks", "inventory", "screen", "scoreboard", "chat_or_system_messages", "target"]),
-      bounds: z.record(z.string(), z.number()).optional(), distance: z.number().positive().max(256).optional(), type: z.string().optional(),
-      name: z.string().optional(), tags: z.array(z.string()).optional(), observation_ids: z.array(z.string()).optional(), limit: z.number().int().min(1).max(4096).optional(),
-    }), annotations: GAME_READ,
-  }, safe(async (args) => {
+    inputSchema: gameQuerySchema, annotations: GAME_READ,
+  }, safe(async (args, signal) => {
+    if (args.kind === "spatial_map") {
+      const { result, client } = await spatialMaps.query(runtime, args as SpatialMapArgs, signal);
+      return ok(`Spatial ${args.representation} map sampled without loading distant chunks.`, {
+        instance_id: client.descriptor.instanceId, kind: args.kind, result,
+      });
+    }
     const { result, client } = await runtime.read("observation.query", args);
     return ok("Game state queried.", { instance_id: client.descriptor.instanceId, kind: args.kind, result: projectGameQuery(objectResult(result), args) });
   }));
