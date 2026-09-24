@@ -153,10 +153,36 @@ lease.
 - `game_observe`: a synchronized image and structured snapshot. Use `clean`
   for footage review and `annotated` when stable target IDs help selection.
 - `game_observe_motion`: a bounded motion burst or contact sheet.
-- `game_query`: precise player/world/entity/block/screen state without another
-  screenshot or distant chunk loading.
+- `game_query`: precise player/world/entity/block/screen state plus negotiated
+  `spatial_map` surface/volume scouting without another screenshot or distant
+  chunk loading.
 - `game_perform`: one audited ordered batch of normal inputs with timeouts,
   postconditions, checkpoints, and guaranteed input release.
+
+For regional camera scouting, prefer structured geometry before collecting
+multiple visual viewpoints:
+
+1. Query a `surface` spatial map at cell size 16 or 32 over the supplied region
+   to locate the subject and broad open camera regions.
+2. Refine only plausible regions at size 8 or 4. Stop structured refinement as
+   soon as the map identifies a usable camera region; it is not a per-block
+   camera solver.
+3. Use `volume` at size 4 or larger only when ceilings, caverns, floating,
+   hollow, stacked, inverted, or overhung geometry makes one surface
+   insufficient, or when a direct observation conflicts with the surface map.
+4. Use one or a small number of screenshots for appearance, framing,
+   occlusion, and several-block pose adjustment, then run the applicable
+   collision/range validation.
+
+Cell size 2 is exceptional. Use `2x2` only for a tightly bounded unresolved
+surface boundary and `2x2x2` only for tight clearance, thin geometry, or
+adjacent volumes after a containing size-4 result. Supply that result's
+`map_id` and an accurate enumerated fallback reason. Do not refine ordinary
+terrain or exterior scenes to size 2 merely because the capability exists.
+Maps report unavailable client-chunk coverage explicitly and never authorize
+movement, chunk loading, or world changes. In replay mode, pause playback
+before the query. A spatial map complements rather than replaces the final
+visual observation.
 
 Ground `navigate_to` uses Minecraft-native evaluation, current loaded terrain,
 and normal inputs. It does not open closed doors, swim, drive, fly, perform

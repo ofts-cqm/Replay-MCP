@@ -35,7 +35,11 @@ do not create constant random motion.
 
 ## Build the shot
 
-1. Inspect the entire action area or route from several candidate views.
+1. If spatial maps are available, use a coarse surface map and bounded size-8
+   or size-4 refinement to identify clear fixed-camera regions along the action
+   area or route. Use volume only where interiors, overhangs, ceilings, or
+   stacked geometry invalidate the surface view. Then inspect the useful
+   candidates visually rather than collecting screenshots from every position.
 2. Choose positions with foreground/background separation, an unobstructed
    subject, and enough lead room in the direction of travel.
 3. For long routes, place fixed views at meaningful beats such as departure,

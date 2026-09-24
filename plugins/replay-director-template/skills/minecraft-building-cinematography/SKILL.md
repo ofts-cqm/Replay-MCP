@@ -14,16 +14,22 @@ should normally move in one deliberate, continuous trace throughout each shot.
 
 ## Survey before keyframing
 
-1. Use visual observations from multiple positions and directions. Inspect the
-   front, sides, rear, height, surroundings, entrances, and any requested
-   interior; one view is not enough to infer the structure.
-2. Choose a readable sequence of architectural beats: establishing context,
+1. When spatial maps are available, begin with a size-16 or size-32 surface map
+   to locate the structure and broad camera clearance, then refine promising
+   regions at size 8 or 4. Use volume only for interiors, ceilings, floating or
+   hollow structures, overhangs, or unresolved vertical geometry. Stop once a
+   plausible camera region is known.
+2. Use a small set of visual observations from candidate positions and
+   directions to judge appearance and composition. Inspect the front, sides,
+   rear, height, surroundings, entrances, and any requested interior as the
+   shot requires; one frame is not enough to infer the structure.
+3. Choose a readable sequence of architectural beats: establishing context,
    approach or reveal, primary facade/form, significant detail or interior,
    and an exit or hero view.
-3. Keep the building framed with clearance at the edges. Use foreground and
+4. Keep the building framed with clearance at the edges. Use foreground and
    parallax deliberately; avoid aimless full orbits when a shorter arc reveals
    the form better.
-4. Connect camera keyframes into a smooth trace with controlled speed and
+5. Connect camera keyframes into a smooth trace with controlled speed and
    easing. Avoid unintended stops, direction reversals, and discontinuities.
 
 The replay world may be paused for a building/environment shot because event

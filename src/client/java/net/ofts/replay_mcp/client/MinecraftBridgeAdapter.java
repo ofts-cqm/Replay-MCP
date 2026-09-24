@@ -39,6 +39,7 @@ import net.ofts.replay_mcp.artifact.ArtifactStore;
 import net.ofts.replay_mcp.capture.ClipMarker;
 import net.ofts.replay_mcp.capture.LocalClipStateMachine;
 import net.ofts.replay_mcp.observation.StableObservationIds;
+import net.ofts.replay_mcp.observation.SpatialMapContract;
 import net.ofts.replay_mcp.operation.CancellationToken;
 import net.ofts.replay_mcp.mixin.client.PacketListenerAccessor;
 import net.ofts.replay_mcp.mixin.client.ScreenInvoker;
@@ -63,6 +64,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private final Minecraft minecraft = Minecraft.getInstance();
     private final GroundNavigationPlanner navigation = new GroundNavigationPlanner(minecraft);
+    private final SpatialMapSampler spatialMaps = new SpatialMapSampler(minecraft);
     private final ArtifactStore artifacts;
     private final net.ofts.replay_mcp.config.ReplayMcpConfig config;
     private final Set<KeyMapping> held = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -124,6 +126,8 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             result.addProperty("connected", minecraft.level != null);
             result.addProperty("runtime_mode", activeRenderer != null ? "rendering" : replayHandler() != null ? "replay_loaded" : logicalRecording ? "live_recording" : minecraft.level != null ? "live_idle" : "game_offline");
             result.addProperty("replay_ready", replayHandler() != null && replayHandler().getCameraEntity() != null);
+            if (minecraft.level != null) result.addProperty("dimension", minecraft.level.dimension().identifier().toString());
+            if (replayHandler() != null) result.addProperty("replay_time_us", replayHandler().getReplaySender().currentTimeStamp() * 1_000L);
             result.addProperty("bridge_enabled", config.bridgeEnabled);
             JsonObject leasePolicy = new JsonObject();
             leasePolicy.addProperty("ttl_ms", config.leaseTtlSeconds * 1_000L);
@@ -169,6 +173,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         unsupportedTravelModes.add("swimming"); unsupportedTravelModes.add("flight"); unsupportedTravelModes.add("vehicles");
         navigationCapability.add("unsupported_travel_modes", unsupportedTravelModes);
         result.add("navigation", navigationCapability);
+        result.add("spatial_map", SpatialMapContract.capability());
         result.addProperty("time_precision_us", 1_000);
         return result;
     }
@@ -213,6 +218,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     @Override public JsonElement invoke(String method, JsonObject params, CancellationToken cancellation) {
         return switch (method) {
             case "observation.snapshot", "observation.query" -> snapshot();
+            case "observation.spatial_map" -> spatialMap(params, cancellation);
             case "observation.framebuffer" -> captureFrame(params);
             case "observation.motion_burst" -> motionBurst(params, cancellation);
             case "action.start_batch" -> perform(params, cancellation);
@@ -329,6 +335,39 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         });
     }
 
+    private JsonObject spatialMap(JsonObject params, CancellationToken cancellation) {
+        long deadlineMs = params.has("deadline_ms") ? params.get("deadline_ms").getAsLong() : 30_000L;
+        CompletableFuture<JsonObject> future = onClient(() -> {
+            if (activeRenderer != null) throw new BridgeException(BridgeError.INVALID_MODE, "spatial maps are unavailable while rendering");
+            var handler = replayHandler();
+            if (openReplay != null && handler == null) throw new BridgeException(BridgeError.INVALID_MODE, "spatial maps are unavailable while a replay is loading");
+            Long replayTimeUs = null;
+            String runtimeMode;
+            if (handler != null) {
+                if (!handler.getReplaySender().paused()) {
+                    JsonObject data = new JsonObject(); data.addProperty("reason", "replay_must_be_paused");
+                    throw new BridgeException(BridgeError.CONFLICT, "pause replay playback before requesting a spatial map", data);
+                }
+                runtimeMode = "replay_loaded"; replayTimeUs = handler.getReplaySender().currentTimeStamp() * 1_000L;
+            } else runtimeMode = logicalRecording ? "live_recording" : "live_idle";
+            Long expectedReplayTimeUs = replayTimeUs;
+            return spatialMaps.submit(params, cancellation, runtimeMode, replayTimeUs, () -> {
+                if (activeRenderer != null) throw new BridgeException(BridgeError.INVALID_MODE, "spatial maps are unavailable while rendering");
+                var currentHandler = replayHandler();
+                if (expectedReplayTimeUs == null) {
+                    if (currentHandler != null) throw new BridgeException(BridgeError.CONFLICT, "runtime mode changed during spatial sampling");
+                    return;
+                }
+                if (currentHandler == null || !currentHandler.getReplaySender().paused()
+                        || currentHandler.getReplaySender().currentTimeStamp() * 1_000L != expectedReplayTimeUs) {
+                    JsonObject data = new JsonObject(); data.addProperty("reason", "replay_must_remain_paused");
+                    throw new BridgeException(BridgeError.CONFLICT, "paused replay state changed during spatial sampling", data);
+                }
+            });
+        });
+        return spatialMaps.await(future, cancellation, deadlineMs);
+    }
+
     private JsonObject captureFrame(JsonObject params) {
         String view = params.has("view") ? params.get("view").getAsString() : "player";
         if (!Set.of("player", "clean", "annotated").contains(view)) throw new BridgeException(BridgeError.INVALID_REQUEST, "unknown observation view");
@@ -435,6 +474,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
 
     void tickActions() {
         tickRecordingFinalization();
+        spatialMaps.tick();
         PendingBatch batch = pendingBatch;
         if (batch == null) return;
         try {
@@ -1376,6 +1416,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         activeRenderCancelled = true;
         if (activeRenderer != null) activeRenderer.cancel();
         renderMonitor.shutdownNow();
+        spatialMaps.close();
         releaseAllInputs();
     }
 }

@@ -42,110 +42,18 @@ editorial analysis.
 
 ## Development disclaimer
 
-**Replay MCP is still in development.** Nothing is published as a stable
-release, compatibility may change, and parts of the user experience are still
-rough. Expect breaking changes between development checkouts.
+**Replay MCP is still in development. It is highly Experimental!** 
+
+Nothing is published as a stable release, compatibility may change, and parts of 
+the user experience are still rough, and may result in high token consumption. 
+Expect breaking changes between development checkouts.
 
 Use a disposable Minecraft instance and test world at first. Keep backups of
 important worlds, recordings, and editor projects.
 
-## Installation from source
+## Installation Guide
 
-Nothing is published yet, so installation is manual.
-
-### 1. Clone and install dependencies
-
-```sh
-git clone https://github.com/ofts-cqm/Replay-MCP.git replay-mcp
-cd replay-mcp
-npm ci
-```
-
-### 2. Build the sidecar and plugin
-
-```sh
-npm run build
-npm run package:plugin
-```
-
-This compiles the Node.js MCP sidecar and creates the complete, installable
-plugin at `plugins/replay-director/`. That directory is generated and ignored;
-the authored manifests and skills live in `plugins/replay-director-template/`.
-
-### 3. Build the Fabric mod
-
-On Linux or macOS:
-
-```sh
-./gradlew build
-```
-
-The normal remapped mod JAR is created in `build/libs/`. Do not install the
-sources JAR.
-
-### 4. Install it in Minecraft
-
-Create a dedicated Minecraft instance using a compatible version.
-Copy the built Replay MCP JAR from ./build/libs into that instance’s `mods/` 
-directory alongside compatible Replay Mod and Fabric API JARs.
-
-Launch Minecraft once. Replay MCP writes local discovery data beneath the game
-directory’s `.replay-mcp/` folder. 
-
-### 5. Configure and start the sidecar
-
-Persist the Minecraft game directory once:
-
-```sh
-node ./plugins/replay-director/bin/replay-mcp-server.mjs configure \
-  --game-dir "/absolute/path/to/minecraft-game-directory"
-```
-
-Or launch a development sidecar with explicit paths:
-
-```sh
-node ./packages/mcp-server/dist/cli.js \
-  --data-dir ./replay-mcp-data \
-  --game-dir "/absolute/path/to/minecraft-game-directory"
-```
-
-`--data-dir` holds project, job, artifact, log, and discovery data.
-
-### 6. Connect an MCP client
-
-Configure your local MCP client to run the sidecar. The exact format differs by
-client; the generic shape is:
-
-```json
-{
-  "mcpServers": {
-    "replay-mcp": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/replay-mcp/packages/mcp-server/dist/cli.js",
-        "--game-dir",
-        "/absolute/path/to/minecraft-game-directory"
-      ]
-    }
-  }
-}
-```
-
-### 7. Optional: install the Codex plugin
-
-```sh
-codex plugin marketplace add "/absolute/path/to/replay-mcp"
-codex plugin add replay-director@replay-mcp-local
-```
-
-Start a new Codex thread after installing or updating the plugin.
-
-### 8. Optional: install a post-production editor
-
-This product does not bundle any video editors. A recommended video editor is
-[SynthCut](https://github.com/Relo-video/SynthCut). Please install a
-post-production video editor so the AI agent can add captions, music, and cuts
-after the video is made using Replay. 
+See InstallationGuide.md
 
 ## Usage guide
 
@@ -180,21 +88,29 @@ Change these controls if they conflict with other bindings.
 
 With the Replay Director plugin installed, communicate in plain filmmaking
 terms. Tell the AI what you want to capture, whether you or the AI should
-perform it, and what result you want. Examples:
+perform it, and what result you want. 
+
+Currently Identifing the target takes most of the time and token, so please be
+as specific as you can during your turn. 
+
+For example, say:
 
 ```text
-I am going to perform the scene. Help me capture three takes, then import the
-accepted clips and render a cinematic wide shot.
-```
-
-```text
-Direct a short sunset walk through the village. Record a take, make a smooth
+Direct a short sunset walk through the village at XYZ = 67 67 67. Record the player
+comming out of the smithy and walk west toward the well. Record a take, make a smooth
 camera shot in Replay Mod, show me a preview, and render it when I approve.
 ```
 
+Instead off:
+
 ```text
-Check the Minecraft connection first. Do not take control until I ask you to.
+Direct a short sunset walk through the village. 
 ```
+
+This one can work, but it may not be what you want. If you have a specific target you
+want, describe it very specifically; otherwise the AI may make whatever he think
+is the best. 
+
 
 For player-led capture, tell the AI that you will use the clip keys. It should
 help you confirm readiness and import the finalized recording afterwards. It
@@ -203,6 +119,20 @@ performance.
 
 For AI-directed work, ask it to acquire control only when you want it to act.
 Only one director may mutate a Minecraft instance at once.
+
+### Other Suggestions
+
+Stay away when AI is directing. To prevent catastrophic event, AI's control will
+be revoked when there are player override such as keyboard input or even mouse input. 
+To prevent accidental control revocation, we recommend you to put the current Minecraft
+instance to another workspace(Desktop if you use Windows) so no accidental input is possible. 
+
+If you choose to move the Minecraft instance to another Workspace/Desktop, remember to press
+`F3+P` to disable `pause on lost focus`. AI watch the screen visually, and the pause screen
+sometimes affects AI's vision. This mod is programmed to automatically disable 
+`pause on lost focus`, but to be safe we still recommend you to disable this function
+manually before each run. 
+
 
 ### Default AI behavior
 

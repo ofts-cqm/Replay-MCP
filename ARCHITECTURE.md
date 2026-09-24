@@ -17,6 +17,7 @@ still pending.
 | Fabric submod service graph and local human controls | **Implemented** |
 | Authenticated mod-to-sidecar bridge and discovery | **Implemented** |
 | Minecraft observation, normal-input actions, and ground pathfinding | **Implemented** |
+| Multiresolution loaded-chunk spatial observation | **Implemented; automated acceptance and real-client bridge/sidecar smoke passed; full performance and product benchmarks pending** |
 | Replay Mod recording, replay, timeline, and render adapters | **Implemented** |
 | Public MCP tools, resources, jobs, and bridge client | **Implemented; automated acceptance passed** |
 | Production manifests and editor-neutral handoff | **Implemented; automated acceptance passed** |
@@ -388,9 +389,29 @@ Query kinds:
 - `scoreboard`
 - `chat_or_system_messages`
 - `target`
+- `spatial_map`
 
 Queries support bounds, distance, type, name, tags, stable observation IDs, and
 result limits. A query is read-only and must not load arbitrary distant chunks.
+
+`spatial_map` is a capability-gated discriminated query backed by the private
+`observation.spatial_map` bridge method. It accepts half-open integer bounds,
+`representation: surface | volume`, and ordinary cell sizes 4, 8, 16, or 32.
+The default `surface` representation returns per-cell minimum/mean/maximum
+surface height and dominant visible material. `volume` conservatively reports
+empty, full-solid, full-fluid, or mixed occupancy as absolute-coordinate
+vertical runs with exposed-material composition. Both return deterministic
+Z/X/Y ordering, requested/effective bounds, a shared palette, explicit loaded
+coverage, capture tick range, and sampling telemetry.
+
+Cell size 2 is an exceptional fallback, separately advertised and constrained.
+It requires a recent containing size-4 `refines_map_id` from this sidecar
+session and a representation-specific reason. The sidecar verifies the parent
+instance, dimension, representation, bounds, and paused replay time before the
+bridge call and audits fallback use. `require_complete: true` turns any missing
+client-chunk coverage into `outside_loaded_area`; default queries return an
+explicit partial map. The sampler never requests or generates chunks and is
+time-sliced on the client thread, with model-facing JSON assembled off-thread.
 
 ### 4.3 Live-game performance
 
@@ -1025,7 +1046,7 @@ operation, but an agent cannot change that setting.
 - `system.*`: hello, capabilities, status, health, emergency stop.
 - `lease.*`: status, acquire, heartbeat, release, human revoke.
 - `observation.*`: framebuffer capture, motion burst, structured snapshot,
-  targeted query.
+  targeted query, multiresolution loaded-chunk spatial map.
 - `action.*`: validate, start batch, cancel batch, release inputs.
 - `recording.*`: status, start, stop, marker.
 - `replay.*`: list, metadata, open, close, save, playback.
@@ -1817,6 +1838,46 @@ must not be claimed as achieved until that run reports phase timings.
   `control_release` cleared it. No world was opened or modified. This verifies
   live lease compatibility, not graphical filmmaking behavior or adoption of
   the new defaults by an existing config.
+
+### 13.11 Spatial-observation implementation snapshot (2026-09-23)
+
+- the Fabric bridge advertises `capabilities.spatial_map` and implements the
+  lease-free, loaded-chunk-only `observation.spatial_map` sampler for surface
+  and volume representations, including time slicing, cancellation, partial
+  coverage, deterministic encoding, material palettes, and size-2 fallback
+  metadata;
+- the public `game_query` schema is discriminated for spatial maps, validates
+  negotiated limits before bridge sampling, keeps a session-bounded parent-map
+  registry, verifies level-2 world/bounds/time lineage, and records fallback
+  telemetry in the sidecar audit;
+- 24 Vitest tests pass across nine files, including capability-unavailable,
+  preflight limit, negative alignment, lease-free routing, fallback lineage,
+  shared-schema, and generated-plugin packaging paths;
+- 35 JUnit tests pass with no failures, errors, or skips, including five new
+  spatial contract tests; the Minecraft 26.2 client source compiles against
+  Replay Mod 26.2-2.6.27;
+- all five authored skills and the generated plugin validate; generated and
+  installed plugin trees match, and installed version
+  `0.1.0+codex.20260923143521` passes the 39-tool offline stdio smoke; and
+- a real Minecraft 26.2 `live_idle` run exercised the authenticated bridge and
+  the public sidecar `game_query` route without acquiring a control lease. A
+  complete 128-by-128 surface map returned 16,384 loaded columns in 6,038
+  bytes; a complete 16-cubed volume map returned 4,096 loaded voxels in 3,667
+  bytes; and a 512-by-512 surface request returned partial coverage with 22
+  explicit unavailable boxes. Requiring completion produced
+  `outside_loaded_area`, while two consecutive distant probes both produced
+  `no_loaded_coverage`, validating the non-creating client chunk-cache lookup;
+- the same run produced and visually inspected a 1250-by-1512 framebuffer
+  (`sha256:3eba7506573bd11920dfb0d4949c5a1338e2d881c440d68756c79e19347329c5`).
+  The visible forest, water-adjacent terrain, and building were consistent with
+  the spatial palettes. Recorded slices had no work above the 5 ms hard
+  boundary, but these single samples do not establish percentile or frame-time
+  gates; and
+- the benchmark evaluator is implemented and self-tested with a synthetic
+  passing matrix. The representative real-client performance suite, complex
+  volume-fixture coverage, and ten-trial-per-scenario agent-efficiency benchmark
+  remain pending. No p95, frame-time, or token-savings claim is made from the
+  smoke evidence.
 
 ## 14. Player-led capture implementation and acceptance — Implemented; live acceptance pending
 

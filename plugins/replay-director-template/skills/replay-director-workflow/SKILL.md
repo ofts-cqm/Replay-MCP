@@ -47,9 +47,13 @@ Permission for filming is not permission for scene dressing.
 
 ## Scout and rehearse before recording
 
-- Inspect every road, doorway, interior, endpoint, and planned camera area with
-  `game_observe`, `game_query`, and additional views. Do not invent geometry
-  from a map or a single frame.
+- When `capabilities.spatial_map` is available, scout regional geometry with a
+  coarse surface map before capturing multiple views, refine plausible camera
+  regions only as far as needed, and use volume only for vertically complex
+  scenes. Follow the resolution and fallback rules in Replay MCP operations.
+  Use visual observations for actual framing and do not invent geometry from a
+  map or a single frame. If the capability is absent, use the bounded visual
+  and structured queries available on that instance.
 - Acquire control once, immediately before the first lease-required rehearsal
   or mutation. Keep that lease through the contiguous capture phase; do not
   call `control_acquire` before each action or edit, and do not send manual

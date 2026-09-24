@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://replay-mcp.local/schemas/bridge-v1/spatial-map.schema.json",
+  "title": "Replay MCP spatial-map request, result, or capability",
+  "oneOf": [
+    {"$ref": "#/definitions/request"},
+    {"$ref": "#/definitions/result"},
+    {"$ref": "#/definitions/capability"}
+  ],
+  "definitions": {
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_x", "max_x", "min_y", "max_y", "min_z", "max_z"],
+      "properties": {
+        "min_x": {"type": "integer"}, "max_x": {"type": "integer"},
+        "min_y": {"type": "integer"}, "max_y": {"type": "integer"},
+        "min_z": {"type": "integer"}, "max_z": {"type": "integer"}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["representation", "bounds", "cell_size"],
+      "properties": {
+        "representation": {"enum": ["surface", "volume"]},
+        "bounds": {"$ref": "#/definitions/bounds"},
+        "cell_size": {"enum": [2, 4, 8, 16, 32]},
+        "surface_mode": {"enum": ["world_surface", "motion_blocking_no_leaves"]},
+        "material_mix_limit": {"enum": [1, 2, 3]},
+        "require_complete": {"type": "boolean"},
+        "refines_map_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "fallback_reason": {"enum": ["unresolved_surface_boundary", "adjacent_surfaces", "tight_clearance", "thin_geometry", "adjacent_volumes"]},
+        "deadline_ms": {"type": "integer", "minimum": 250, "maximum": 300000}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"representation": {"const": "surface"}}},
+          "then": {"properties": {"fallback_reason": {"enum": ["unresolved_surface_boundary", "adjacent_surfaces"]}}},
+          "else": {
+            "properties": {"surface_mode": false, "fallback_reason": {"enum": ["tight_clearance", "thin_geometry", "adjacent_volumes"]}}
+          }
+        },
+        {
+          "if": {"properties": {"cell_size": {"const": 2}}},
+          "then": {"required": ["refines_map_id", "fallback_reason"], "properties": {"refines_map_id": {"type": "string"}, "fallback_reason": {"type": "string"}}},
+          "else": {"properties": {"refines_map_id": false, "fallback_reason": false}}
+        }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["map_id", "instance_id", "representation", "dimension", "runtime_mode", "requested_bounds", "effective_bounds", "cell_size", "grid", "palette", "capture_start_tick", "capture_end_tick", "consistency", "coverage", "work", "unavailable_boxes"],
+      "properties": {
+        "map_id": {"type": "string", "minLength": 1},
+        "instance_id": {"type": "string", "format": "uuid"},
+        "representation": {"enum": ["surface", "volume"]},
+        "dimension": {"type": "string", "minLength": 1},
+        "runtime_mode": {"enum": ["live_idle", "live_recording", "replay_loaded"]},
+        "requested_bounds": {"$ref": "#/definitions/bounds"},
+        "effective_bounds": {"$ref": "#/definitions/bounds"},
+        "cell_size": {"enum": [2, 4, 8, 16, 32]},
+        "grid": {"type": "object"},
+        "palette": {"type": "array", "items": {"type": "string"}},
+        "capture_start_tick": {"type": "integer"},
+        "capture_end_tick": {"type": "integer"},
+        "consistency": {"enum": ["single_tick", "multi_tick"]},
+        "coverage": {"type": "object"},
+        "work": {"type": "object"},
+        "unavailable_boxes": {"type": "array"},
+        "response_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["surface", "volume", "loaded_chunks_only", "surface_cell_sizes", "surface_fallback_cell_sizes", "volume_cell_sizes", "volume_fallback_cell_sizes", "surface_modes", "material_mix_limits", "limits", "partial_coverage", "multi_tick"],
+      "properties": {
+        "surface": {"const": true}, "volume": {"const": true}, "loaded_chunks_only": {"const": true},
+        "surface_cell_sizes": {"const": [4, 8, 16, 32]}, "surface_fallback_cell_sizes": {"const": [2]},
+        "volume_cell_sizes": {"const": [4, 8, 16, 32]}, "volume_fallback_cell_sizes": {"const": [2]},
+        "surface_modes": {"type": "array", "items": {"enum": ["world_surface", "motion_blocking_no_leaves"]}, "minItems": 2, "uniqueItems": true},
+        "material_mix_limits": {"const": [1, 2, 3]},
+        "limits": {"type": "object"}, "partial_coverage": {"const": true}, "multi_tick": {"const": true}
+      }
+    }
+  }
+}
