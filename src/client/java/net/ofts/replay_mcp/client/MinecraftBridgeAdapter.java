@@ -62,6 +62,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
+    private final AtomicBoolean sceneWork = new AtomicBoolean();
+    private net.ofts.replay_mcp.production.ProductionReviewStore production;
+    private ReplayMcpServiceGraph productionServices;
+    void production(net.ofts.replay_mcp.production.ProductionReviewStore value, ReplayMcpServiceGraph services) { production = value; productionServices = services; }
+    boolean busyForReview() { return activeRenderJob != null || sceneWork.get() || pendingBatch != null; }
+    String reviewBusyReason() { return activeRenderJob != null ? "render_active" : sceneWork.get() ? "camera_operation_active" : pendingBatch != null ? "action_batch_active" : null; }
+    void stopActionsForReview() {
+        if (pendingBatch != null) {
+            PendingBatch batch = pendingBatch; pendingBatch = null; batch.token.cancel(); releaseHeld();
+            // Review is terminal for the batch, including continue_on_failure batches.
+            batch.result.completeExceptionally(new BridgeException(BridgeError.CANCELLED, "player review requested"));
+        }
+        releaseAllInputs();
+    }
+    void leaseLost() { activeRenderCancelled=true; if(activeRenderer!=null) activeRenderer.cancel(); releaseAllInputs(); }
+    boolean conflictingMouseOperation() { return pendingBatch != null || activeRenderJob != null || sceneWork.get(); }
+    @Override public void requireMutationAllowed(String method) {
+        if ((activeRenderJob != null || sceneWork.get()) && (method.startsWith("timeline.") || method.startsWith("replay.") || method.equals("render.start")))
+            throw new BridgeException(BridgeError.CONFLICT,"camera work is active; conflicting mutations are blocked");
+        if (onClient(() -> minecraft.gui.screen() instanceof ReplayMcpControlScreen || minecraft.gui.screen() instanceof PlayerReviewScreen || (productionServices != null && productionServices.reviewPending()))
+            && !method.startsWith("production.") && !method.equals("system.emergency_stop") && !method.equals("system.cancel") && !method.equals("action.release_inputs") && !method.equals("render.cancel"))
+            throw new BridgeException(BridgeError.CONFLICT, "player review is pending or open; wait for presentation and physical review to finish");
+    }
     private final Minecraft minecraft = Minecraft.getInstance();
     private final GroundNavigationPlanner navigation = new GroundNavigationPlanner(minecraft);
     private final SpatialMapSampler spatialMaps = new SpatialMapSampler(minecraft);
@@ -88,9 +111,12 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     private Path replaySource;
     private Path replayWorkingCopy;
     private boolean replayDirty;
+    private JsonObject lastClearance;
+    private final net.ofts.replay_mcp.production.FollowTimingStore followTiming;
     private PendingBatch pendingBatch;
     private final ScheduledExecutorService renderMonitor = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "replay-mcp-render-monitor"); t.setDaemon(true); return t; });
     private volatile VideoRenderer activeRenderer;
+    private volatile JsonObject lastFollowTrace;
     private volatile String activeRenderJob;
     private volatile Path activeRenderOutput;
     private volatile Path activeRenderPartial;
@@ -99,6 +125,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
 
     MinecraftBridgeAdapter(ArtifactStore artifacts, net.ofts.replay_mcp.config.ReplayMcpConfig config) {
         this.artifacts = artifacts; this.config = config;
+        this.followTiming = new net.ofts.replay_mcp.production.FollowTimingStore(artifacts.root().resolve("follow-timing"));
     }
 
     void localClipStart() { localClip(LocalClipAction.START); }
@@ -158,7 +185,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     @Override public JsonObject capabilities() {
         JsonObject result = new JsonObject();
         JsonArray families = new JsonArray();
-        for (String family : new String[]{"system", "lease", "observation", "action", "recording", "replay", "timeline", "render"}) families.add(family);
+        for (String family : new String[]{"system", "lease", "observation", "action", "recording", "replay", "timeline", "render", "production"}) families.add(family);
         result.add("families", families);
         result.addProperty("normal_input", true); result.addProperty("structured_observation", true);
         result.addProperty("framebuffer_capture", true); result.addProperty("clean_capture", true); result.addProperty("annotated_capture", true); result.addProperty("native_timeline", true);
@@ -174,6 +201,10 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         navigationCapability.add("unsupported_travel_modes", unsupportedTravelModes);
         result.add("navigation", navigationCapability);
         result.add("spatial_map", SpatialMapContract.capability());
+        result.addProperty("path_clearance_policy", "native-linear-frozen-sweep/3");
+        result.addProperty("temporal_clearance_policy", "native-linear-packet-static-sweep/1");
+        result.addProperty("follow_context", "native-follow-context/1");
+        result.addProperty("sampled_preview_renderer", "replaymod-native-still/1");
         result.addProperty("time_precision_us", 1_000);
         return result;
     }
@@ -188,10 +219,27 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
 
     @Override public void timelineChanged(JsonObject state) {
         onClient(() -> {
+            requireMutationAllowed("timeline.apply");
             if (openReplay == null || ReplayModSimplePathing.instance == null || ReplayModSimplePathing.instance.getCurrentTimeline() == null) {
                 throw new BridgeException(BridgeError.INVALID_MODE, "no editable Replay Mod timeline is loaded");
             }
             SPTimeline timeline = ReplayModSimplePathing.instance.getCurrentTimeline();
+            JsonObject declaredTracks = state.getAsJsonObject("tracks");
+            for (String trackName : new String[]{"camera_position","yaw","pitch","roll","replay_time"}) if (declaredTracks.has(trackName)) for(JsonElement element:declaredTracks.getAsJsonArray(trackName)) {
+                JsonObject frame=element.getAsJsonObject();
+                if(frame.has("interpolation") && (!Set.of("linear","cubic_spline","catmull_rom").contains(frame.get("interpolation").getAsString()) || trackName.equals("replay_time") && !frame.get("interpolation").getAsString().equals("linear")))
+                    throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE,"unsupported native interpolation for " + trackName);
+            }
+            for (String rotation : new String[]{"yaw","pitch","roll"}) if (declaredTracks.has(rotation)) for (JsonElement item : declaredTracks.getAsJsonArray(rotation)) {
+                JsonObject key=item.getAsJsonObject(); if (!key.has("interpolation")) continue;
+                JsonObject position=at(declaredTracks,"camera_position",key.get("time_us").getAsLong());
+                String expected=position!=null && position.has("interpolation")?position.get("interpolation").getAsString():"linear";
+                if(!key.get("interpolation").getAsString().equals(expected)) throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE,"native position and rotation share one interpolator; use aligned matching interpolation");
+            }
+            // Resolve all union times before mutating native state, so unsupported curve layouts fail atomically.
+            for(String trackName:new String[]{"camera_position","yaw","pitch","roll"}) if(declaredTracks.has(trackName)) for(JsonElement element:declaredTracks.getAsJsonArray(trackName))
+                for(String resolve:new String[]{"camera_position","yaw","pitch","roll"}) at(declaredTracks,resolve,element.getAsJsonObject().get("time_us").getAsLong());
+            timeline.setDefaultInterpolatorType(com.replaymod.simplepathing.InterpolatorType.LINEAR);
             timeline.getTimePath().getKeyframes().stream().toList().forEach(k -> timeline.getTimePath().remove(k, true));
             timeline.getPositionPath().getKeyframes().stream().toList().forEach(k -> timeline.getPositionPath().remove(k, true));
             JsonObject tracks = state.getAsJsonObject("tracks");
@@ -210,13 +258,34 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                 int spectated = (int) number(at(tracks, "spectated_entity", timeUs), "value", -1);
                 timeline.addPositionKeyframe(timeUs / 1_000L, x, y, z, yaw, pitch, roll, spectated);
             }
+            for (JsonElement element : tracks.has("camera_position") ? tracks.getAsJsonArray("camera_position") : new JsonArray()) {
+                JsonObject frame = element.getAsJsonObject();
+                String interpolation = frame.has("interpolation") ? frame.get("interpolation").getAsString() : "linear";
+                var type = switch (interpolation) { case "catmull_rom" -> com.replaymod.simplepathing.InterpolatorType.CATMULL_ROM; case "cubic_spline" -> com.replaymod.simplepathing.InterpolatorType.CUBIC; default -> com.replaymod.simplepathing.InterpolatorType.LINEAR; };
+                if (timeline.getPositionPath().getSegments().stream().anyMatch(segment -> segment.getStartKeyframe().getTime() == frame.get("time_us").getAsLong()/1000)) timeline.setInterpolator(frame.get("time_us").getAsLong()/1000, type.newInstance());
+            }
             replayDirty = true;
             return null;
         });
     }
 
     @Override public JsonElement invoke(String method, JsonObject params, CancellationToken cancellation) {
-        return switch (method) {
+        boolean ownsScene = Set.of("replay.preview_sample", "replay.path_clearance", "replay.trajectory", "replay.camera_context").contains(method);
+        if (ownsScene && !sceneWork.compareAndSet(false,true)) throw new BridgeException(BridgeError.CONFLICT,"camera operation already active");
+        try { return switch (method) {
+            case "production.status" -> onClient(() -> productionServices.productionStatus(params.get("project_id").getAsString()));
+            case "production.draft" -> onClient(() -> {
+                String project = params.get("project_id").getAsString();
+                JsonObject result = production.draft(project, params.getAsJsonObject("contract"), params.has("base_hash") ? params.get("base_hash").getAsString() : "");
+                productionServices.presentContract(project, result.get("draft_hash").getAsString());
+                return productionServices.productionStatus(project);
+            });
+            case "production.report" -> onClient(() -> {
+                String project = params.get("project_id").getAsString();
+                production.report(project, params.getAsJsonObject("report"));
+                productionServices.presentExportReport(project);
+                return productionServices.productionStatus(project);
+            });
             case "observation.snapshot", "observation.query" -> snapshot();
             case "observation.spatial_map" -> spatialMap(params, cancellation);
             case "observation.framebuffer" -> captureFrame(params);
@@ -233,12 +302,15 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             case "replay.close" -> replayClose();
             case "replay.save" -> replaySave(params);
             case "replay.playback" -> playback(params);
-            case "replay.preview_sample" -> previewSample(params);
-            case "render.start" -> renderStart(params);
+            case "replay.camera_context" -> onClient(() -> cameraContext(params));
+            case "replay.path_clearance" -> onClient(() -> pathClearance(params, cancellation));
+            case "replay.trajectory" -> trajectory(params, cancellation);
+            case "replay.preview_sample" -> previewSample(params, cancellation);
+            case "render.start" -> onClient(() -> renderStart(params));
             case "render.cancel" -> renderCancel(params);
             case "render.still" -> renderStill(params);
             default -> BridgeAdapter.super.invoke(method, params, cancellation);
-        };
+        }; } finally { if (ownsScene) sceneWork.set(false); }
     }
 
     private JsonObject snapshot() {
@@ -272,14 +344,14 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                 JsonArray entities = new JsonArray();
                 for (Entity entity : minecraft.level.entitiesForRendering()) if (entity != minecraft.player && entity.distanceToSqr(minecraft.player) <= 1024) {
                     JsonObject value = new JsonObject(); value.addProperty("observation_id", entityIds.register(entity)); value.addProperty("runtime_id", entity.getId());
-                    value.addProperty("uuid", entity.getUUID().toString()); value.addProperty("type", entity.getType().toString()); value.addProperty("name", entity.getName().getString());
+                    value.addProperty("uuid", entity.getUUID().toString()); value.addProperty("type", net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString()); value.addProperty("name", entity.getName().getString());
                     value.addProperty("x", entity.getX()); value.addProperty("y", entity.getY()); value.addProperty("z", entity.getZ()); value.addProperty("distance", entity.distanceTo(minecraft.player)); entities.add(value);
                     if (entities.size() >= 256) break;
                 }
                 result.add("nearby_entities", entities);
                 JsonArray blocks = new JsonArray(); BlockPos center = minecraft.player.blockPosition();
                 for (int dx = -8; dx <= 8; dx++) for (int dy = -4; dy <= 4; dy++) for (int dz = -8; dz <= 8; dz++) {
-                    BlockPos pos = center.offset(dx, dy, dz); if (!minecraft.level.hasChunkAt(pos)) continue; var state = minecraft.level.getBlockState(pos); if (state.isAir()) continue;
+                    BlockPos pos = center.offset(dx, dy, dz); if (!loadedChunkAt(pos)) continue; var state = minecraft.level.getBlockState(pos); if (state.isAir()) continue;
                     JsonObject block = new JsonObject(); block.addProperty("observation_id", "block:" + pos.getX() + ":" + pos.getY() + ":" + pos.getZ()); block.addProperty("x", pos.getX()); block.addProperty("y", pos.getY()); block.addProperty("z", pos.getZ()); block.addProperty("state", state.toString()); blocks.add(block);
                     if (blocks.size() >= 4096) break;
                 }
@@ -369,10 +441,14 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private JsonObject captureFrame(JsonObject params) {
+        return captureFrame(params, false);
+    }
+
+    private JsonObject captureFrame(JsonObject params, boolean requireWorld) {
         String view = params.has("view") ? params.get("view").getAsString() : "player";
         if (!Set.of("player", "clean", "annotated").contains(view)) throw new BridgeException(BridgeError.INVALID_REQUEST, "unknown observation view");
         CompletableFuture<com.mojang.blaze3d.platform.NativeImage> image;
-        try { image = FrameCaptureCoordinator.request(!view.equals("player")); }
+        try { image = FrameCaptureCoordinator.request(!view.equals("player"), requireWorld); }
         catch (IllegalStateException e) { throw new BridgeException(BridgeError.CONFLICT, e.getMessage()); }
         try {
             com.mojang.blaze3d.platform.NativeImage captured = image.get(10, TimeUnit.SECONDS);
@@ -494,6 +570,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private void beginStep(PendingBatch batch, JsonObject action) {
+        requireMutationAllowed("action.start_batch");
         batch.current = action; batch.stepStartTick = gameTick();
         batch.stepDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(action.has("timeout_ms") ? action.get("timeout_ms").getAsLong() : 30_000L);
         if (action.has("preconditions") && !conditionsMet(action.get("preconditions"))) throw new BridgeException(BridgeError.CONFLICT, "action preconditions were not met");
@@ -974,32 +1051,14 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             return listener == null ? null : ((PacketListenerAccessor) listener).replayMcp$outputPath().toAbsolutePath().normalize();
         });
         if (source.equals(activeRecording)) throw new BridgeException(BridgeError.CONFLICT, "replay is still being recorded and is not finalized");
-        try (ReplayFile file = ReplayMod.instance.files.open(source)) {
-            ReplayMetaData metadata = file.getMetaData(); JsonObject result = new JsonObject();
-            result.addProperty("path", source.toString()); result.addProperty("duration_us", metadata.getDuration() * 1_000L);
-            result.addProperty("created_at_ms", metadata.getDate()); result.addProperty("server", metadata.getServerName()); result.addProperty("minecraft_version", metadata.getMcVersion());
-            result.addProperty("file_format", metadata.getFileFormat()); result.addProperty("file_format_version", metadata.getFileFormatVersion()); result.addProperty("time_precision_us", 1_000);
+        try {
+            JsonObject result = net.ofts.replay_mcp.capture.FinalizedReplayMetadata.read(source);
             JsonObject descriptor = describeFile(source, "application/x-minecraft-replay", 0, 0, true);
-            result.addProperty("replay_id", descriptor.get("sha256").getAsString());
-            result.addProperty("sha256", descriptor.get("sha256").getAsString()); result.addProperty("size", descriptor.get("size").getAsLong());
-            result.addProperty("finalized", true); result.addProperty("source_immutable", true);
-            JsonArray markers = new JsonArray();
-            var replayMarkers = file.getMarkers();
-            if (replayMarkers.isPresent()) replayMarkers.get().stream()
-                    .sorted(java.util.Comparator.comparingInt(Marker::getTime)
-                            .thenComparing(Marker::getName, java.util.Comparator.nullsFirst(String::compareTo)))
-                    .forEach(marker -> {
-                        String markerName = marker.getName() == null ? "" : marker.getName();
-                        JsonObject value = new JsonObject(); value.addProperty("name", markerName); value.addProperty("time_us", marker.getTime() * 1_000L);
-                        ClipMarker.parse(markerName).ifPresent(parsed -> {
-                            value.addProperty("namespace", "replay_mcp:clip:v1"); value.addProperty("clip_id", parsed.clipId());
-                            value.addProperty("kind", parsed.kind().name().toLowerCase(java.util.Locale.ROOT));
-                        });
-                        markers.add(value);
-                    });
-            result.add("markers", markers);
+            result.addProperty("path", source.toString());
+            result.add("replay_id", descriptor.get("sha256")); result.add("sha256", descriptor.get("sha256"));
+            result.add("size", descriptor.get("size"));
             return result;
-        } catch (IOException e) { throw new BridgeException(BridgeError.INVALID_REQUEST, "cannot read replay metadata"); }
+        } catch (IOException e) { throw new BridgeException(BridgeError.INVALID_REQUEST, "cannot read finalized replay metadata: " + e.getMessage()); }
     }
 
     private enum LocalClipAction { START, END, REVOKE }
@@ -1026,6 +1085,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private JsonObject replayOpen(JsonObject params) {
+        lastClearance = null;
         if (openReplay != null || replayHandler() != null) throw new BridgeException(BridgeError.CONFLICT, "a replay is already open");
         Path source = confinedReplay(params.get("path").getAsString(), true);
         try {
@@ -1082,7 +1142,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         });
     }
 
-    private JsonObject previewSample(JsonObject params) {
+    private JsonObject previewSample(JsonObject params, CancellationToken cancellation) {
         if (!params.has("output_time_us")) throw new BridgeException(BridgeError.INVALID_REQUEST, "output_time_us is required");
         long outputUs = params.get("output_time_us").getAsLong();
         if (outputUs < 0) throw new BridgeException(BridgeError.INVALID_REQUEST, "output_time_us must be non-negative");
@@ -1115,13 +1175,360 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new BridgeException(BridgeError.CANCELLED, "preview sample interrupted"); }
         } while (true);
 
-        JsonObject frame = captureFrame(params);
         boolean readyForValidation = chunksReady;
         JsonObject validation = onClient(() -> cameraSafety(params, outputMs, readyForValidation));
+        JsonObject frame = new JsonObject();
+        if (!params.has("diagnostics_only") || !params.get("diagnostics_only").getAsBoolean()) {
+            // Loaded block data is not rendered terrain. Native still rendering
+            // runs ReplayMod's preroll, ticks, chunk preparation and render lifecycle.
+            cancellation.throwIfCancelled();
+            JsonObject still = new JsonObject();
+            still.addProperty("time_us",outputMs*1000);
+            still.addProperty("output","sampled-preview/"+UUID.randomUUID()+".png");
+            still.addProperty("width",params.has("width")?params.get("width").getAsInt():640);
+            still.addProperty("height",params.has("height")?params.get("height").getAsInt():360);
+            still.addProperty("alpha",false); still.addProperty("anti_aliasing",1);
+            CompletableFuture<JsonObject> rendered = new CompletableFuture<>();
+            JsonObject started = onClient(() -> renderStill(still, rendered));
+            long renderDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(25);
+            try {
+                while (!rendered.isDone()) {
+                    cancellation.throwIfCancelled();
+                    if(System.nanoTime()>=renderDeadline) throw new BridgeException(BridgeError.TIMEOUT,"native preview sample timed out");
+                    try { rendered.get(100,TimeUnit.MILLISECONDS); } catch(TimeoutException waiting) { /* bounded cancellation polling */ }
+                }
+                frame=rendered.get();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt(); throw new BridgeException(BridgeError.CANCELLED,"native preview interrupted");
+            } catch (java.util.concurrent.ExecutionException failure) {
+                throw new BridgeException(BridgeError.INTERNAL_ERROR,"native preview render failed");
+            } finally {
+                if(!rendered.isDone() && started.get("job_id").getAsString().equals(activeRenderJob)) renderCancel(started);
+            }
+            frame.addProperty("image_source","replaymod-native-still/1");
+        }
         frame.add("validation", validation);
         frame.addProperty("output_time_us", mapped.get("output_time_us").getAsLong());
         frame.addProperty("replay_time_us", mapped.get("replay_time_us").getAsLong());
         return frame;
+    }
+
+    private JsonObject cameraContext(JsonObject params) {
+        if (minecraft.level == null || replayHandler() == null) throw new BridgeException(BridgeError.INVALID_MODE,"loaded replay required");
+        ReplaySeekController.seekSettled(replayHandler().getReplaySender(),Math.toIntExact(params.get("replay_start_us").getAsLong()/1000),1000);
+        JsonObject start=params.getAsJsonObject("start"); double x=start.get("x").getAsDouble(),y=start.get("y").getAsDouble(),z=start.get("z").getAsDouble();
+        double support=Double.NEGATIVE_INFINITY;
+        boolean resolveSupport=!params.has("resolve_support") || params.get("resolve_support").getAsBoolean();
+        for(int by=(int)Math.floor(y);resolveSupport && by>=(int)Math.floor(y)-16;by--) {
+            BlockPos pos=BlockPos.containing(x,by,z);
+            if(!loadedChunkAt(pos)) throw new BridgeException(BridgeError.CONFLICT,"support region is not loaded");
+            for(var box:minecraft.level.getBlockState(pos).getCollisionShape(minecraft.level,pos).toAabbs())
+                if(x>=pos.getX()+box.minX && x<=pos.getX()+box.maxX && z>=pos.getZ()+box.minZ && z<=pos.getZ()+box.maxZ && pos.getY()+box.maxY<=y+.01) support=Math.max(support,pos.getY()+box.maxY);
+            if(Double.isFinite(support)) break;
+        }
+        if(resolveSupport && !Double.isFinite(support)) throw new BridgeException(BridgeError.CONFLICT,"no supporting collision surface within 16 blocks");
+        if(resolveSupport) y=support+1.6; Vec3 from=new Vec3(x,y,z); double best=-1,bestYaw=0;
+        boolean orientOpen=!params.has("orient_open") || params.get("orient_open").getAsBoolean();
+        for(int i=0;orientOpen && i<8;i++) {
+            double angle=i*Math.PI/4; Vec3 to=from.add(-Math.sin(angle)*8,0,Math.cos(angle)*8);
+            boolean loaded=true;
+            for(int step=0;step<=16;step++) if(!loadedChunkAt(BlockPos.containing(from.lerp(to,step/16.0)))) {loaded=false;break;}
+            if(!loaded) continue;
+            var hit=minecraft.level.clip(new net.minecraft.world.level.ClipContext(from,to,net.minecraft.world.level.ClipContext.Block.COLLIDER,net.minecraft.world.level.ClipContext.Fluid.NONE,replayHandler().getCameraEntity()));
+            double clearance=from.distanceTo(hit.getLocation()); if(clearance>best+1e-6) {best=clearance;bestYaw=i*45;}
+        }
+        if(orientOpen && best<0) throw new BridgeException(BridgeError.CONFLICT,"no loaded open-space direction");
+        JsonObject result=new JsonObject(); result.addProperty("x",x);result.addProperty("y",y);result.addProperty("z",z);result.addProperty("yaw",bestYaw);if(resolveSupport) result.addProperty("support_y",support);result.addProperty("height_policy",resolveSupport?"single supporting surface +1.6; continuous fixed-height trajectory, then full-path check":"explicit height");return result;
+    }
+
+    private String nativePathHash(SPTimeline timeline) {
+        try { return net.ofts.replay_mcp.protocol.CanonicalJson.sha256(com.google.gson.JsonParser.parseString(new com.replaymod.replaystudio.pathing.serialize.TimelineSerialization(timeline, openReplay).serialize(java.util.Map.of("camera", timeline.getTimeline())))); }
+        catch (IOException e) { throw new BridgeException(BridgeError.INTERNAL_ERROR,"cannot hash native camera path"); }
+    }
+
+    private JsonObject pathClearance(JsonObject params, CancellationToken cancellation) {
+        var handler = replayHandler();
+        SPTimeline timeline = ReplayModSimplePathing.instance == null ? null : ReplayModSimplePathing.instance.getCurrentTimeline();
+        if (handler == null || timeline == null || minecraft.level == null) throw new BridgeException(BridgeError.INVALID_MODE,"loaded replay required");
+        JsonObject result = new JsonObject(); result.addProperty("policy","native-linear-frozen-sweep/3");
+        result.addProperty("native_path_hash",nativePathHash(timeline)); result.addProperty("clearance_half_extent",0.5);
+        long startUs=params.get("start_us").getAsLong(), endUs=params.get("end_us").getAsLong();
+        if(startUs%1000!=0 || endUs%1000!=0) throw new BridgeException(BridgeError.INVALID_REQUEST,"clearance range must be millisecond aligned");
+        long start = startUs/1000, end = endUs/1000;
+        if (start < 0 || end <= start) throw new BridgeException(BridgeError.INVALID_REQUEST,"invalid clearance range");
+        result.addProperty("start_us",start*1000); result.addProperty("end_us",end*1000);
+        if(replaySource==null || replayWorkingCopy==null) return clearanceUnknown(result,"immutable replay identity unavailable");
+        try { result.add("replay_sha256",describeFile(replaySource,"application/x-minecraft-replay",0,0,true).get("sha256")); }
+        catch(IOException failure) { throw new BridgeException(BridgeError.INTERNAL_ERROR,"cannot bind replay identity"); }
+        result.addProperty("replay_session",replayWorkingCopy.toString());
+        result.addProperty("projection_policy","standard; vertical FOV <=110; aspect <=4; near plane <=0.05; no stabilization");
+        if(params.has("follow_player_uuid")) {
+            var trace=lastFollowTrace;
+            if(!net.ofts.replay_mcp.production.NativeClearancePolicy.followBindingMatches(timeline,start,end,trace,params,replayWorkingCopy.toString()))
+                return clearanceUnknown(result,"follow timing has no matching current native trace");
+            result.addProperty("follow_fps",trace.get("follow_fps").getAsInt());
+            try { followTiming.bind(result.get("replay_sha256").getAsString(), result.get("native_path_hash").getAsString(),
+                    trace.get("follow_fps").getAsInt(), start*1000, end*1000); }
+            catch(IOException failure) { throw new BridgeException(BridgeError.INTERNAL_ERROR,"cannot persist follow timing requirements"); }
+        }
+        if (params.has("skip_collision_check") && params.get("skip_collision_check").getAsBoolean()) {
+            result.addProperty("collision_check","skipped"); lastClearance=result.deepCopy(); return result;
+        }
+        result.addProperty("collision_check","unverified");
+        timeline.getTimeline().getPaths().forEach(com.replaymod.replaystudio.pathing.path.Path::updateAll);
+        var timePath = timeline.getTimePath(); var positionPath = timeline.getPositionPath();
+        boolean advancing = !timePath.getValue(TimestampProperty.PROPERTY,start).equals(timePath.getValue(TimestampProperty.PROPERTY,end));
+        String unsupported=net.ofts.replay_mcp.production.NativeClearancePolicy.unsupportedReason(timeline,start,end,advancing);
+        if(unsupported!=null) return clearanceUnknown(result,unsupported);
+        Integer frozen=timePath.getValue(TimestampProperty.PROPERTY,start).orElseThrow();
+        if(frozen<0 || frozen>handler.getReplayDuration()) return clearanceUnknown(result,"source time outside replay");
+        if(advancing) {
+            int sourceEnd=timePath.getValue(TimestampProperty.PROPERTY,end).orElse(-1);
+            if(sourceEnd>handler.getReplayDuration()) return clearanceUnknown(result,"source end outside replay");
+            JsonObject history=temporalHistory(frozen,sourceEnd,cancellation);
+            result.add("temporal_history",history); result.addProperty("policy","native-linear-packet-static-sweep/1");
+            if(!history.get("verified").getAsBoolean()) return clearanceUnknown(result,history.get("reason").getAsString());
+        }
+        ReplaySeekController.seekSettled(handler.getReplaySender(),frozen,1000);
+        java.util.TreeSet<Long> times = new java.util.TreeSet<>(); times.add(start); times.add(end);
+        for (var key : positionPath.getKeyframes()) if (key.getTime() > start && key.getTime() < end) times.add(key.getTime());
+        Long previous = null; double[] a = null; int tested=0;
+        for (long time : times) {
+            var p = positionPath.getValue(com.replaymod.pathing.properties.CameraProperties.POSITION,time).orElse(null);
+            if (p == null) return clearanceUnknown(result,"camera position missing over requested range");
+            if (positionPath.getValue(SpectatorProperty.PROPERTY,time).orElse(-1) != -1) return clearanceUnknown(result,"spectator trajectories unsupported");
+            double[] b = {p.getLeft(),p.getMiddle(),p.getRight()};
+            for(double coordinate:b) if(!Double.isFinite(coordinate) || Math.abs(coordinate)>30000000) return clearanceUnknown(result,"nonfinite or out-of-world camera coordinate");
+            if (a != null) {
+                int minX=(int)Math.floor(Math.min(a[0],b[0])-1.5), maxX=(int)Math.floor(Math.max(a[0],b[0])+1.5);
+                int minY=(int)Math.floor(Math.min(a[1],b[1])-1.5), maxY=(int)Math.floor(Math.max(a[1],b[1])+1.5);
+                int minZ=(int)Math.floor(Math.min(a[2],b[2])-1.5), maxZ=(int)Math.floor(Math.max(a[2],b[2])+1.5);
+                if ((long)(maxX-minX+1)*(maxY-minY+1)*(maxZ-minZ+1)>100000) return clearanceUnknown(result,"geometry budget exceeded");
+                var firstContact = new net.ofts.replay_mcp.production.SweptClearance.FirstContact<JsonObject>();
+                for (int x=minX;x<=maxX;x++) for(int y=minY;y<=maxY;y++) for(int z=minZ;z<=maxZ;z++) {
+                    cancellation.throwIfCancelled(); if (++tested>100000) return clearanceUnknown(result,"geometry budget exceeded");
+                    BlockPos block = new BlockPos(x,y,z);
+                    if (!loadedChunkAt(block)) return clearanceUnknown(result,"unloaded chunk in swept region");
+                    var state = minecraft.level.getBlockState(block);
+                    if(!net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getNamespace().equals("minecraft")) return clearanceUnknown(result,"modded collision shape unsupported");
+                    if (state.getBlock() instanceof net.minecraft.world.level.block.piston.MovingPistonBlock) return clearanceUnknown(result,"moving collision shape unsupported");
+                    for (var box : state.getCollisionShape(minecraft.level,block).toAabbs()) {
+                        double hit = net.ofts.replay_mcp.production.SweptClearance.firstIntersection(a,b,new double[]{box.minX+x,box.minY+y,box.minZ+z},new double[]{box.maxX+x,box.maxY+y,box.maxZ+z},.5);
+                        if (Double.isFinite(hit)) {
+                            JsonObject obstacle=new JsonObject(); obstacle.addProperty("x",x); obstacle.addProperty("y",y); obstacle.addProperty("z",z); obstacle.addProperty("block",state.toString());
+                            firstContact.consider(hit, obstacle);
+                        }
+                    }
+                }
+                if (firstContact.found()) {
+                    double hit=firstContact.parameter();
+                    result.addProperty("collision_check","blocked"); result.addProperty("blocked_start_us",previous*1000); result.addProperty("blocked_end_us",time*1000);
+                    result.addProperty("contact_time_us",(previous+(time-previous)*hit)*1000);
+                    JsonObject contact=new JsonObject();contact.addProperty("x",a[0]+(b[0]-a[0])*hit);contact.addProperty("y",a[1]+(b[1]-a[1])*hit);contact.addProperty("z",a[2]+(b[2]-a[2])*hit);result.add("contact_position",contact);
+                    result.add("obstruction",firstContact.obstacle()); result.addProperty("tested_blocks",tested);
+                    lastClearance=result.deepCopy(); return result;
+                }
+            }
+            a=b; previous=time;
+        }
+        if(params.has("follow_player_uuid")) {
+            JsonObject follow=validateFollowPath(params,timeline,start,end,frozen,cancellation);
+            result.add("follow_evidence",follow);
+            if(!follow.get("verified").getAsBoolean())return clearanceUnknown(result,follow.get("reason").getAsString());
+        }
+        result.addProperty("collision_check","verified"); result.addProperty("tested_blocks",tested); result.addProperty("replay_time_us",frozen*1000L);
+        result.addProperty("scope","native static block collision shapes; axis-aligned half-extent 0.5; no entity/visual-composition guarantee");
+        lastClearance=result.deepCopy(); return result;
+    }
+    private JsonObject validateFollowPath(JsonObject params,SPTimeline timeline,long start,long end,int sourceStart,CancellationToken cancellation) {
+        JsonObject result=new JsonObject();result.addProperty("policy","native-follow-tick-envelope/1");result.addProperty("verified",false);
+        JsonObject trace=lastFollowTrace;
+        if(trace==null || start!=0 || trace.get("source_start_us").getAsLong()!=sourceStart*1000L || trace.get("source_end_us").getAsLong()!=(sourceStart+end)*1000L
+                || !trace.get("player_uuid").equals(params.get("follow_player_uuid")) || !trace.get("follow_fps").equals(params.get("follow_fps")) || !trace.get("replay_session").getAsString().equals(replayWorkingCopy.toString())) {
+            result.addProperty("reason","current native subject trace does not bind this player, source range, session and FPS");return result;
+        }
+        double min=params.get("follow_min_distance").getAsDouble(),max=params.get("follow_max_distance").getAsDouble(),elevation=params.get("follow_elevation").getAsDouble();
+        if(!Double.isFinite(min) || !Double.isFinite(max) || min<.5 || max>32 || min>max || !Double.isFinite(elevation) || elevation<0 || elevation>2)throw new BridgeException(BridgeError.INVALID_REQUEST,"invalid follow bounds");
+        JsonArray samples=trace.getAsJsonArray("samples");JsonObject geometry=followGeometry(samples,max,sourceStart,cancellation);
+        if(!geometry.get("verified").getAsBoolean()){result.addProperty("reason",geometry.get("reason").getAsString());return result;}
+        java.util.TreeSet<Long> times=new java.util.TreeSet<>();for(var key:timeline.getPositionPath().getKeyframes())if(key.getTime()>=start && key.getTime()<=end)times.add(key.getTime());
+        for(long t=start;t<=end;t+=50)times.add(t);
+        double[] a=null,sa=null;long previous=0;int tested=0;
+        for(long time:times) {
+            int index=(int)(time/50);double ratio=(time%50)/50.0;
+            JsonObject left=samples.get(index).getAsJsonObject(),right=samples.get(Math.min(index+1,samples.size()-1)).getAsJsonObject();
+            double[] subject=new double[3];String[] axes={"x","y","z"};for(int i=0;i<3;i++)subject[i]=left.get(axes[i]).getAsDouble()+(right.get(axes[i]).getAsDouble()-left.get(axes[i]).getAsDouble())*ratio;
+            var position=timeline.getPositionPath().getValue(com.replaymod.pathing.properties.CameraProperties.POSITION,time).orElseThrow();double[] b={position.getLeft(),position.getMiddle(),position.getRight()};
+            if(b[1]<subject[1]-1e-7 || b[1]>subject[1]+elevation+1e-7) {result.addProperty("reason","follow eye-relative elevation bounds failed");return result;}
+            if(a!=null) {
+                result.addProperty("blocked_start_us",previous*1000);result.addProperty("blocked_end_us",time*1000);
+                if(!net.ofts.replay_mcp.production.FollowTracePolicy.distanceBound(a,b,sa,subject,min,max)) {result.addProperty("reason","continuous horizontal follow distance bound failed");return result;}
+                for(var item:geometry.getAsJsonArray("boxes")) {
+                    cancellation.throwIfCancelled();if(++tested>2000000){result.addProperty("reason","follow visibility budget exhausted");return result;}
+                    var box=item.getAsJsonArray();double[] low={box.get(0).getAsDouble(),box.get(1).getAsDouble(),box.get(2).getAsDouble()},high={box.get(3).getAsDouble(),box.get(4).getAsDouble(),box.get(5).getAsDouble()};
+                    if(net.ofts.replay_mcp.production.FollowTracePolicy.sightHullIntersects(a,b,sa,subject,low,high)){result.addProperty("reason","continuous subject eye-ray hull is obstructed");return result;}
+                }
+            }
+            a=b;sa=subject;previous=time;
+        }
+        result.remove("blocked_start_us");result.remove("blocked_end_us");result.addProperty("verified",true);result.addProperty("trace_hash",trace.get("trace_hash").getAsString());
+        result.addProperty("output_start_us",start*1000);result.addProperty("output_end_us",end*1000);
+        result.addProperty("fps",trace.get("follow_fps").getAsInt());result.addProperty("player_uuid",trace.get("player_uuid").getAsString());
+        result.addProperty("horizontal_min",min);result.addProperty("horizontal_max",max);result.addProperty("elevation_max",elevation);
+        result.addProperty("visibility_scope","continuous collision-shape-free eye-ray hull, not full silhouette or composition");return result;
+    }
+
+    private JsonObject clearanceUnknown(JsonObject result,String reason) { result.addProperty("collision_check","unverified"); result.addProperty("reason",reason); lastClearance=result.deepCopy(); return result; }
+
+    private JsonObject temporalHistory(long start,long end,CancellationToken cancellation) {
+        JsonObject proof=new JsonObject(); proof.addProperty("policy",net.ofts.replay_mcp.production.TemporalPacketPolicy.VERSION);
+        proof.addProperty("start_us",start*1000);proof.addProperty("end_us",end*1000);proof.addProperty("verified",false);
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5); int count=0; long previous=-1;
+        try(var in=openReplay.getPacketData(com.replaymod.core.versions.MCVer.getPacketTypeRegistry(com.replaymod.replaystudio.lib.viaversion.api.protocol.packet.State.LOGIN))) {
+            com.replaymod.replaystudio.PacketData data;
+            while((data=in.readPacket())!=null) {
+                try {
+                    cancellation.throwIfCancelled();
+                    if(++count>1000000 || System.nanoTime()>deadline) {proof.addProperty("reason","packet history budget exhausted");return proof;}
+                    long time=data.getTime();
+                    if(time<previous) {proof.addProperty("reason","nonmonotonic packet history");return proof;} previous=time;
+                    if(time>end) break;
+                    String packetName=data.getPacket().getType().name();
+                    if(time>=start && packetName.equals("Bundle")) {proof.addProperty("reason","bundle boundary requires temporal history support");return proof;}
+                    if(time>start && !net.ofts.replay_mcp.production.TemporalPacketPolicy.supported(data.getPacket().getType().name())) {
+                        proof.addProperty("reason","unsupported temporal packet: "+data.getPacket().getType().name());
+                        proof.addProperty("blocked_start_us",time*1000);proof.addProperty("blocked_end_us",Math.min(end,time+1)*1000);return proof;
+                    }
+                } finally {data.getPacket().release();}
+            }
+            if(previous<end) {proof.addProperty("reason","packet history does not cover interval end");return proof;}
+        } catch(IOException failure) {proof.addProperty("reason","incomplete packet history: "+failure.getMessage());return proof;}
+        proof.addProperty("verified",true);proof.addProperty("packets_scanned",count);
+        proof.addProperty("scope","advancing replay with no geometry, pose, lifecycle, teleport or unknown packets in interval");return proof;
+    }
+
+    private JsonObject trajectory(JsonObject params,CancellationToken cancellation) {
+        long start=params.get("start_us").getAsLong()/1000,end=params.get("end_us").getAsLong()/1000;
+        onClient(() -> {
+            var handler=replayHandler(); if(handler==null || openReplay==null) throw new BridgeException(BridgeError.INVALID_MODE,"loaded immutable-source replay required");
+            if(start<0 || end<=start || end>handler.getReplayDuration() || end-start>60000) throw new BridgeException(BridgeError.INVALID_REQUEST,"trajectory interval must be 0–60 seconds inside replay");
+            ReplaySeekController.seekSettled(handler.getReplaySender(),(int)start,1000);
+            var player=minecraft.level==null?null:minecraft.level.getPlayerByUUID(UUID.fromString(params.get("player_uuid").getAsString()));
+            if(player==null) {JsonObject interval=new JsonObject();interval.addProperty("blocked_start_us",start*1000);interval.addProperty("blocked_end_us",Math.min(end,start+50)*1000);throw new BridgeException(BridgeError.CONFLICT,"player UUID is unavailable at source interval start",interval);}
+            return null;
+        });
+        int fps=params.has("follow_fps")?params.get("follow_fps").getAsInt():60;
+        if(!net.ofts.replay_mcp.production.FollowTracePolicy.supportedFps(fps) || start<=1000 || (end-start)%50!=0 || end+50>replayHandler().getReplayDuration())
+            throw new BridgeException(BridgeError.INVALID_REQUEST,"native follow requires FPS 20/40/60/80/100/120, start >1s, 50ms-aligned duration, and 50ms source tail");
+        JsonObject history=temporalHistory(start-1000,end+50,cancellation);
+        if(!history.get("verified").getAsBoolean()) {
+            JsonObject result=new JsonObject();result.add("temporal_history",history);result.addProperty("subject_motion_verified",false);result.addProperty("subject_motion_reason",history.get("reason").getAsString());return result;
+        }
+        var future=new CompletableFuture<JsonObject>();
+        onClient(() -> {startFollowTrace(params,start,end,fps,future);return null;});
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(150);
+        JsonObject result;
+        while(true) {
+            try {cancellation.throwIfCancelled();if(System.nanoTime()>deadline)throw new BridgeException(BridgeError.TIMEOUT,"native follow trace budget exceeded");result=future.get(100,TimeUnit.MILLISECONDS);break;}
+            catch(java.util.concurrent.TimeoutException waiting) { }
+            catch(InterruptedException interrupted) {Thread.currentThread().interrupt();throw new BridgeException(BridgeError.CANCELLED,"follow trace interrupted");}
+            catch(java.util.concurrent.ExecutionException failed) {throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE,"native follow trace failed: "+failed.getCause().getMessage());}
+            catch(RuntimeException failure) {onClient(() -> {if(activeRenderer!=null)activeRenderer.cancel();activeRenderCancelled=true;return null;});throw failure;}
+        }
+        result.add("temporal_history",history);result.addProperty("source_start_us",start*1000);result.addProperty("source_end_us",end*1000);
+        result.addProperty("follow_fps",fps);result.addProperty("player_uuid",params.get("player_uuid").getAsString());
+        result.addProperty("elevation_reference","player_eye");result.addProperty("eye_height_mode","native renderer current pose; pose changes unsupported");
+        result.addProperty("trajectory_source","replaymod-native-tick-trace/1");result.addProperty("sample_step_us",50000);
+        result.addProperty("replay_session",replayWorkingCopy.toString());
+        try {result.add("replay_sha256",describeFile(replaySource,"application/x-minecraft-replay",0,0,true).get("sha256"));}
+        catch(IOException failure){throw new BridgeException(BridgeError.INTERNAL_ERROR,"cannot bind native trace");}
+        result.addProperty("trace_hash",net.ofts.replay_mcp.protocol.CanonicalJson.sha256(result));
+        lastFollowTrace=result.deepCopy();
+        JsonArray tracedSamples=result.getAsJsonArray("samples");
+        if(params.has("geometry_radius"))result.add("geometry",onClient(() -> followGeometry(tracedSamples,params.get("geometry_radius").getAsDouble(),(int)start,cancellation)));
+        return result;
+    }
+
+    private void startFollowTrace(JsonObject params,long start,long end,int fps,CompletableFuture<JsonObject> future) {
+        if(activeRenderJob!=null)throw new BridgeException(BridgeError.CONFLICT,"render already active");
+        var handler=replayHandler();
+        var player=minecraft.level.getPlayerByUUID(UUID.fromString(params.get("player_uuid").getAsString()));
+        if(!(player instanceof net.minecraft.client.player.RemotePlayer))throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE,"follow trace supports native remote players only");
+        var trace=new SPTimeline();trace.setDefaultInterpolatorType(com.replaymod.simplepathing.InterpolatorType.LINEAR);
+        trace.addTimeKeyframe(0,(int)start);trace.addTimeKeyframe(end-start+50,(int)end+50);
+        for(long t:new long[]{0,end-start+50})trace.addPositionKeyframe(t,player.getX(),player.getEyeY()+4,player.getZ(),0,90,0,-1);
+        trace.setInterpolator(0,com.replaymod.simplepathing.InterpolatorType.LINEAR.newInstance());
+        String job=UUID.randomUUID().toString();Path frames=renderOutput("follow-trace-"+job+".frames");
+        JsonObject settingsArgs=new JsonObject();settingsArgs.addProperty("preset","transparent_png");settingsArgs.addProperty("width",16);settingsArgs.addProperty("height",16);settingsArgs.addProperty("fps",fps);settingsArgs.addProperty("anti_aliasing",1);
+        RenderSettings settings=renderSettings(settingsArgs,frames);
+        int restoreWidth=minecraft.getWindow().getWidth(),restoreHeight=minecraft.getWindow().getHeight();
+        activeRenderJob=job;activeRenderOutput=frames;activeRenderPartial=frames;activeRenderCancelled=false;
+        ReplayMod.instance.runLaterWithoutLock(() -> {
+            MCVer.resizeMainWindow(minecraft,16,16);
+            ReplayMod.instance.runLaterWithoutLock(() -> {
+                try {
+                    // Reset history before native preroll; never reuse the previous seek's entity interpolation state.
+                    handler.getReplaySender().setSyncModeAndWait();handler.getReplaySender().sendPacketsTill(0);handler.getReplaySender().sendPacketsTill((int)start-1000);
+                    JsonArray samples=new JsonArray();double[][] previousCurrent={null};
+                    VideoRenderer renderer=new VideoRenderer(settings,handler,trace.getTimeline()) {
+                        @Override public float updateForNextFrame() {
+                            float partial=super.updateForNextFrame();long output=(long)(getFramesDone()-1)*1000/fps;
+                            if(output%50==0 && output<=end-start) {
+                                var target=minecraft.level==null?null:minecraft.level.getPlayerByUUID(UUID.fromString(params.get("player_uuid").getAsString()));
+                                if(!(target instanceof net.minecraft.client.player.RemotePlayer))throw new IllegalStateException("missing player blocked interval "+(start+output)*1000);
+                                if(Math.abs(partial)>1e-5)throw new IllegalStateException("native tick phase is unsupported");
+                                Vec3 eye=target.getEyePosition(0),current=target.getEyePosition(1);
+                                double[] old={eye.x,eye.y,eye.z},now={current.x,current.y,current.z};
+                                for(double[] point:new double[][]{old,now})for(double coordinate:point)if(!Double.isFinite(coordinate) || Math.abs(coordinate)>30000000)throw new IllegalStateException("native subject coordinate outside supported world bounds");
+                                if(previousCurrent[0]!=null && !net.ofts.replay_mcp.production.FollowTracePolicy.same(previousCurrent[0],old))throw new IllegalStateException("native subject tick envelope discontinuity at "+(start+output)*1000);
+                                previousCurrent[0]=now;
+                                JsonObject sample=new JsonObject();sample.addProperty("time_us",(start+output)*1000);sample.addProperty("x",eye.x);sample.addProperty("y",eye.y);sample.addProperty("z",eye.z);sample.addProperty("yaw",target.getYRot());samples.add(sample);
+                            }
+                            return partial;
+                        }
+                    };
+                    activeRenderer=renderer;if(activeRenderCancelled)renderer.cancel();
+                    if(!renderer.renderVideo() || renderer.hasFailed() || activeRenderCancelled)throw new IllegalStateException("native follow trace interrupted");
+                    if(samples.size()!=(end-start)/50+1)throw new IllegalStateException("incomplete native tick trace");
+                    JsonObject result=new JsonObject();result.add("samples",samples);result.addProperty("subject_motion_verified",true);result.addProperty("subject_motion_reason","native joined 50ms eye interpolation envelopes at bound FPS");future.complete(result);
+                }catch(Throwable failure){future.completeExceptionally(failure);}
+                finally {
+                    try {if(Files.exists(frames))try(var files=Files.walk(frames)){for(Path file:files.sorted(java.util.Comparator.reverseOrder()).toList())Files.deleteIfExists(file);}}
+                    catch(IOException cleanup){ReplayModRender.LOGGER.warn("Could not remove follow trace scratch frames",cleanup);}
+                    MCVer.resizeMainWindow(minecraft,restoreWidth,restoreHeight);clearActiveRender();
+                }
+            });
+        });
+    }
+
+    private JsonObject followGeometry(JsonArray samples,double radius,int sourceStart,CancellationToken cancellation) {
+        if(!Double.isFinite(radius) || radius<.5 || radius>32) throw new BridgeException(BridgeError.INVALID_REQUEST,"invalid follow geometry radius");
+        ReplaySeekController.seekSettled(replayHandler().getReplaySender(),sourceStart,1000);
+        double[] min={Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY},max={-Double.MAX_VALUE,-Double.MAX_VALUE,-Double.MAX_VALUE};
+        for(var item:samples) {var p=item.getAsJsonObject();String[] axes={"x","y","z"};for(int i=0;i<3;i++){double v=p.get(axes[i]).getAsDouble();min[i]=Math.min(min[i],v);max[i]=Math.max(max[i],v);}}
+        int x0=(int)Math.floor(min[0]-radius-2),x1=(int)Math.ceil(max[0]+radius+2),y0=(int)Math.floor(min[1]-2),y1=(int)Math.ceil(max[1]+4),z0=(int)Math.floor(min[2]-radius-2),z1=(int)Math.ceil(max[2]+radius+2);
+        JsonObject result=new JsonObject();result.addProperty("policy","native-follow-context/1");result.addProperty("verified",false);
+        if((double)(x1-x0+1)*(y1-y0+1)*(z1-z0+1)>100000) {result.addProperty("reason","follow geometry budget exceeded");return result;}
+        JsonArray boxes=new JsonArray();
+        for(int x=x0;x<=x1;x++) for(int y=y0;y<=y1;y++) for(int z=z0;z<=z1;z++) {
+            cancellation.throwIfCancelled(); BlockPos pos=new BlockPos(x,y,z);
+            if(!loadedChunkAt(pos)) {result.addProperty("reason","unloaded follow geometry");return result;}
+            var state=minecraft.level.getBlockState(pos);
+            if(!net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getNamespace().equals("minecraft") || state.getBlock() instanceof net.minecraft.world.level.block.piston.MovingPistonBlock) {result.addProperty("reason","unsupported follow geometry");return result;}
+            for(var box:state.getCollisionShape(minecraft.level,pos).toAabbs()) {
+                JsonArray bounds=new JsonArray();for(double v:new double[]{box.minX+x,box.minY+y,box.minZ+z,box.maxX+x,box.maxY+y,box.maxZ+z}) bounds.add(v);boxes.add(bounds);
+            }
+        }
+        JsonArray bounds=new JsonArray();for(double v:new double[]{x0+1,y0+1,z0+1,x1-1,y1-1,z1-1}) bounds.add(v);
+        result.add("bounds",bounds);result.add("boxes",boxes);result.addProperty("verified",true);return result;
+    }
+
+    private boolean loadedChunkAt(BlockPos pos) {
+        // ClientLevel.hasChunkAt is unconditional on this client. Never ask for
+        // fallback empty chunks: absent geometry must remain unknown.
+        return minecraft.level != null && minecraft.level.getChunkSource().getChunk(
+                Math.floorDiv(pos.getX(), 16), Math.floorDiv(pos.getZ(), 16),
+                net.minecraft.world.level.chunk.status.ChunkStatus.FULL, false) != null;
     }
 
     private boolean chunksReady(int radius) {
@@ -1130,7 +1537,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         if (camera == null || minecraft.level == null) return false;
         BlockPos center = camera.blockPosition();
         for (int x = -radius; x <= radius; x++) for (int z = -radius; z <= radius; z++) {
-            if (!minecraft.level.hasChunkAt(center.offset(x * 16, 0, z * 16))) return false;
+            if (!loadedChunkAt(center.offset(x * 16, 0, z * 16))) return false;
         }
         return true;
     }
@@ -1166,6 +1573,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private synchronized JsonObject renderStart(JsonObject params) {
+        requireMutationAllowed("render.start");
         if (activeRenderJob != null) throw new BridgeException(BridgeError.CONFLICT, "a Replay Mod render is already active");
         var handler = replayHandler();
         SPTimeline timeline = ReplayModSimplePathing.instance == null ? null : ReplayModSimplePathing.instance.getCurrentTimeline();
@@ -1179,6 +1587,48 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         long startMs = params.has("start_us") ? params.get("start_us").getAsLong() / 1_000L : 0L;
         long endMs = params.has("end_us") ? params.get("end_us").getAsLong() / 1_000L : fullDurationMs;
         if (startMs < 0 || endMs <= startMs || endMs > fullDurationMs) throw new BridgeException(BridgeError.INVALID_REQUEST, "render range is outside the authored output timeline");
+        JsonObject receipt = new JsonObject();
+        try {
+            receipt.addProperty("version", 1);
+            receipt.addProperty("certifiable_projection", settings.getRenderMethod() == RenderSettings.RenderMethod.DEFAULT && !settings.isStabilizeYaw() && !settings.isStabilizePitch() && !settings.isStabilizeRoll());
+            receipt.addProperty("replay_mod_version", ReplayMod.instance.getVersion());
+            receipt.addProperty("quality", params.has("preset") ? params.get("preset").getAsString() : "high_quality");
+            receipt.addProperty("replay_sha256", describeFile(replaySource, "application/x-minecraft-replay", 0, 0, true).get("sha256").getAsString());
+            String nativePath = new com.replaymod.replaystudio.pathing.serialize.TimelineSerialization(timeline, openReplay).serialize(java.util.Map.of("camera", timeline.getTimeline()));
+            receipt.addProperty("native_path_hash", net.ofts.replay_mcp.protocol.CanonicalJson.sha256(com.google.gson.JsonParser.parseString(nativePath)));
+            receipt.addProperty("start_us", startMs * 1000); receipt.addProperty("end_us", endMs * 1000);
+            followTiming.requireCompatible(receipt.get("replay_sha256").getAsString(), receipt.get("native_path_hash").getAsString(), settings.getFramesPerSecond(), startMs*1000, endMs*1000);
+            receipt.addProperty("fps", settings.getFramesPerSecond()); receipt.addProperty("width",settings.getTargetVideoWidth()); receipt.addProperty("height",settings.getTargetVideoHeight());
+            String collision = "unverified";
+            if (lastClearance != null && lastClearance.has("replay_sha256") && lastClearance.get("replay_sha256").equals(receipt.get("replay_sha256")) && replayWorkingCopy!=null && lastClearance.get("replay_session").getAsString().equals(replayWorkingCopy.toString()) && !settings.isStabilizeYaw() && !settings.isStabilizePitch() && !settings.isStabilizeRoll() && lastClearance.get("native_path_hash").getAsString().equals(receipt.get("native_path_hash").getAsString()) && lastClearance.get("start_us").getAsLong() <= startMs*1000 && lastClearance.get("end_us").getAsLong() >= endMs*1000 && settings.getRenderMethod() == RenderSettings.RenderMethod.DEFAULT && settings.getTargetVideoWidth() <= settings.getTargetVideoHeight()*4 && minecraft.options.fov().get() <= 110) collision=lastClearance.get("collision_check").getAsString();
+            if(lastClearance!=null && lastClearance.has("follow_fps") && lastClearance.get("native_path_hash").equals(receipt.get("native_path_hash"))
+                    && (lastClearance.get("follow_fps").getAsInt()!=settings.getFramesPerSecond() || lastClearance.get("start_us").getAsLong()!=startMs*1000 || lastClearance.get("end_us").getAsLong()!=endMs*1000))
+                throw new BridgeException(BridgeError.CONFLICT,"follow timing is bound to complete plate range and FPS, including collision-skipped paths");
+            if(lastClearance!=null && lastClearance.has("follow_evidence") && lastClearance.get("native_path_hash").equals(receipt.get("native_path_hash"))) {
+                var follow=lastClearance.getAsJsonObject("follow_evidence");
+                if(follow.get("verified").getAsBoolean() && (follow.get("fps").getAsInt()!=settings.getFramesPerSecond() || follow.get("output_start_us").getAsLong()!=startMs*1000 || follow.get("output_end_us").getAsLong()!=endMs*1000))throw new BridgeException(BridgeError.CONFLICT,"follow render FPS/range differs from native trajectory proof; render the complete bound plate and trim in assembly, or regenerate");
+                if(!collision.equals("unverified"))receipt.add("follow_evidence",follow.deepCopy());
+            }
+            receipt.addProperty("collision", collision);
+            if(lastClearance!=null && !collision.equals("unverified")) receipt.add("clearance_evidence",lastClearance.deepCopy());
+            // Frame identities come from the exact native renderer time convention (floor(frame*1000/fps)).
+            long frameCount=(endMs-startMs)*settings.getFramesPerSecond()/1000;
+            if(frameCount<=8000) {
+                JsonArray frameIdentities=new JsonArray(); timeline.getTimeline().getPaths().forEach(com.replaymod.replaystudio.pathing.path.Path::updateAll);
+                for(long frame=0;frame<frameCount;frame++) {
+                    long time=startMs+frame*1000/settings.getFramesPerSecond(); JsonObject identity=new JsonObject();
+                    identity.add("replay",receipt.get("replay_sha256"));
+                    identity.addProperty("source_ms",timeline.getTimePath().getValue(TimestampProperty.PROPERTY,time).orElse(-1));
+                    var pos=timeline.getPositionPath().getValue(com.replaymod.pathing.properties.CameraProperties.POSITION,time).orElse(null);
+                    var rot=timeline.getPositionPath().getValue(com.replaymod.pathing.properties.CameraProperties.ROTATION,time).orElse(null);
+                    if(pos==null || rot==null || timeline.getPositionPath().getValue(SpectatorProperty.PROPERTY,time).orElse(-1)!=-1) { frameIdentities=new JsonArray(); break; }
+                    identity.addProperty("x",pos.getLeft());identity.addProperty("y",pos.getMiddle());identity.addProperty("z",pos.getRight());
+                    identity.addProperty("yaw",((rot.getLeft()%360)+360)%360);identity.addProperty("pitch",rot.getMiddle());identity.addProperty("roll",((rot.getRight()%360)+360)%360);
+                    frameIdentities.add(net.ofts.replay_mcp.protocol.CanonicalJson.sha256(identity));
+                }
+                receipt.add("frame_identities",frameIdentities);
+            } receipt.addProperty("renderer", "replaymod-native/1");
+        } catch (IOException e) { throw new BridgeException(BridgeError.INTERNAL_ERROR,"cannot bind render provenance"); }
         var renderTimeline = startMs == 0 && endMs == fullDurationMs
                 ? timeline.getTimeline() : new TimelineRangeView(timeline.getTimeline(), startMs, endMs);
         int restoreWidth = minecraft.getWindow().getWidth(), restoreHeight = minecraft.getWindow().getHeight();
@@ -1195,6 +1645,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                 JsonObject event = renderEvent(jobId, renderer); event.addProperty("complete", succeeded);
                 if (succeeded) {
                     moveAtomic(partial, output);
+                    event.add("render_receipt", receipt.deepCopy());
                     event.addProperty("output", output.toString());
                     if (Files.isRegularFile(output)) event.add("artifact", describeFile(output, mimeFor(output), settings.getVideoWidth(), settings.getVideoHeight(), true));
                 } else {
@@ -1214,6 +1665,10 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
 
     private synchronized JsonObject renderStill(JsonObject params) {
+        return renderStill(params, null);
+    }
+
+    private synchronized JsonObject renderStill(JsonObject params, CompletableFuture<JsonObject> sampleResult) {
         if (activeRenderJob != null) throw new BridgeException(BridgeError.CONFLICT, "a Replay Mod render is already active");
         var handler = replayHandler();
         if (handler == null) throw new BridgeException(BridgeError.INVALID_MODE, "a replay must be loaded for still rendering");
@@ -1238,13 +1693,16 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         if (timeline == null) throw new BridgeException(BridgeError.INVALID_MODE, "an editable replay timeline is required");
         long fullDurationMs = timelineOutputDuration(timeline);
         long outputMs = actualUs / 1_000L;
-        if (outputMs >= fullDurationMs) throw new BridgeException(BridgeError.INVALID_REQUEST, "still time is outside the authored output timeline");
-        long endMs = Math.min(fullDurationMs, outputMs + 100L);
-        var oneFrame = new TimelineRangeView(timeline.getTimeline(), outputMs, endMs);
+        if (outputMs > fullDurationMs) throw new BridgeException(BridgeError.INVALID_REQUEST, "still time is outside the authored output timeline");
+        if (timeline.getTimePath().getValue(TimestampProperty.PROPERTY,outputMs).isEmpty()
+                || timeline.getPositionPath().getValue(com.replaymod.pathing.properties.CameraProperties.POSITION,outputMs).isEmpty())
+            throw new BridgeException(BridgeError.INVALID_REQUEST,"still time has no authored camera/time value");
+        var oneFrame = TimelineRangeView.still(timeline.getTimeline(), outputMs);
         String jobId = UUID.randomUUID().toString(); activeRenderJob = jobId; activeRenderOutput = output; activeRenderPartial = frames; activeRenderCancelled = false;
         ReplayMod.instance.runLaterWithoutLock(() -> {
             MCVer.resizeMainWindow(minecraft, settings.getVideoWidth(), settings.getVideoHeight());
             ReplayMod.instance.runLaterWithoutLock(() -> {
+            JsonObject sampledArtifact = null;
             try {
                 VideoRenderer renderer = new VideoRenderer(settings, handler, oneFrame); activeRenderer = renderer;
                 if (activeRenderCancelled) renderer.cancel();
@@ -1255,7 +1713,8 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                     Path frame = frames.resolve("0.png");
                     if (!Files.isRegularFile(frame)) throw new IOException("Replay Mod did not produce the expected still frame");
                     moveAtomic(frame, output); Files.deleteIfExists(frames);
-                    event.add("artifact", describeFile(output, "image/png", width, height, true));
+                    sampledArtifact=describeFile(output, "image/png", width, height, true);
+                    event.add("artifact", sampledArtifact);
                     events.publish("render.completed", event);
                 } else {
                     event.addProperty("incomplete_output", frames.toString());
@@ -1265,7 +1724,16 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
                 ReplayModRender.LOGGER.error("Replay MCP still render job {} failed", jobId, failure);
                 JsonObject event = new JsonObject(); event.addProperty("job_id", jobId); event.addProperty("error", "Replay Mod still renderer failed");
                 event.addProperty("incomplete_output", frames.toString()); events.publish("render.failed", event);
-            } finally { MCVer.resizeMainWindow(minecraft, restoreWidth, restoreHeight); clearActiveRender(); }
+            } finally {
+                try { MCVer.resizeMainWindow(minecraft, restoreWidth, restoreHeight); }
+                finally {
+                    clearActiveRender();
+                    if(sampleResult!=null) {
+                        if(sampledArtifact!=null) sampleResult.complete(sampledArtifact);
+                        else sampleResult.completeExceptionally(new IllegalStateException("native still did not complete"));
+                    }
+                }
+            }
             });
         });
         JsonObject result = new JsonObject(); result.addProperty("job_id", jobId); result.addProperty("status", "running");
@@ -1389,7 +1857,7 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
         if (!candidate.startsWith(root) || candidate.equals(root)) throw new BridgeException(BridgeError.POLICY_DENIED, "replay path escapes Replay Mod root");
         if (existing && !Files.isRegularFile(candidate)) throw new BridgeException(BridgeError.INVALID_REQUEST, "replay does not exist"); return candidate;
     }
-    private void clearReplay() { openReplay = null; replaySource = null; replayWorkingCopy = null; replayDirty = false; }
+    private void clearReplay() { lastFollowTrace=null; lastClearance=null; openReplay = null; replaySource = null; replayWorkingCopy = null; replayDirty = false; }
     private static long safeSize(Path path) { try { return Files.size(path); } catch (IOException ignored) { return -1; } }
     private static void moveAtomic(Path source, Path target) throws IOException {
         try { Files.move(source, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE); }
@@ -1397,7 +1865,18 @@ final class MinecraftBridgeAdapter implements BridgeAdapter, AutoCloseable {
     }
     private static JsonObject at(JsonObject tracks, String name, long timeUs) {
         if (!tracks.has(name)) return null;
-        JsonObject best = null; for (JsonElement element : tracks.getAsJsonArray(name)) { JsonObject frame = element.getAsJsonObject(); if (frame.get("time_us").getAsLong() <= timeUs) best = frame; else break; } return best;
+        JsonObject best = null, next = null;
+        for (JsonElement element : tracks.getAsJsonArray(name)) { JsonObject frame = element.getAsJsonObject(); if (frame.get("time_us").getAsLong() <= timeUs) best = frame; else { next = frame; break; } }
+        if (best == null || next == null || best.get("time_us").getAsLong() == timeUs || name.equals("spectated_entity")) return best;
+        if (best.has("interpolation") && !best.get("interpolation").getAsString().equals("linear")) throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE,"curved tracks must have aligned camera and rotation keyframes");
+        double fraction=(double)(timeUs-best.get("time_us").getAsLong())/(next.get("time_us").getAsLong()-best.get("time_us").getAsLong());
+        JsonObject value=best.deepCopy();
+        for(String field:name.equals("camera_position")?new String[]{"x","y","z"}:new String[]{"value"}) if(best.has(field) && next.has(field)) {
+            double start=best.get(field).getAsDouble(),delta=next.get(field).getAsDouble()-start;
+            if(name.equals("yaw") || name.equals("roll")) delta=((delta+180)%360+360)%360-180;
+            value.addProperty(field,start+fraction*delta);
+        }
+        value.addProperty("time_us",timeUs); return value;
     }
     private static double number(JsonObject object, String key, double fallback) { return object != null && object.has(key) ? object.get(key).getAsDouble() : fallback; }
     private static JsonObject success() { JsonObject result = new JsonObject(); result.addProperty("ok", true); return result; }

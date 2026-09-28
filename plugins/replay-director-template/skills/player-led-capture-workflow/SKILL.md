@@ -54,6 +54,12 @@ Use the returned `CapturedTake` exactly:
 On revision conflict, re-read and reconcile. Never edit the source `.mcpr` or
 open a still-recording replay.
 
+For the final-film contract, follow the automatic review-window flow in Replay
+MCP operations: `production_contract_draft` presents review and waits for physical
+submission. Inspect the returned review state. Do not ask the player to press F10
+to discover a saved draft. Contract review, replay import, and `replay_open` are
+separate steps; none implies the others have happened.
+
 ## Author replay shots
 
 Acquire control once immediately before `replay_open`, and retain it through
@@ -80,3 +86,12 @@ prevents required release, ask the user before continuing.
 Finish with [Replay post-production](../replay-post-production/SKILL.md),
 project validation, handoff export, and one `control_release` in final cleanup.
 On human override or lease loss, stop instead of repeatedly reacquiring.
+
+Contract review waits in `production_contract_draft` by default. **Submit** commits
+comments for the current video and closes; **Approve all videos (N)** commits
+approval for every plan listed in the window and closes. Any typed comment
+applies only to the current video. Already-approved plans remain unchanged.
+Continue a timed-out wait via `production_status` with the returned
+revision/sequence cursor, following the shared operations reference. Keep the
+turn active while waiting; do not ask the player to send an extra chat message.
+Escape discards unsent input and never approves.

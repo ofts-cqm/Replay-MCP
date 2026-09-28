@@ -9,6 +9,11 @@ import type { JobRecord } from "../jobs/store.js";
 import { ReplayMcpRuntime, objectResult } from "../runtime.js";
 import { SIDECAR_VERSION } from "../types.js";
 import { capturedShotId, capturedTakeId, parseClipMarkers, verifyReplaySource, type CapturedTake } from "../capture/importer.js";
+import { planFollow, type FollowGeometry } from "../camera/follow-planner.js";
+import { presetSchema, generatePreset, type TrajectorySample } from "../camera/presets.js";
+import { shotBinding } from "../production/progress.js";
+import { contractSchema, editSchema } from "../production/contract.js";
+import { reviewCursor, waitForReview, waitForExportReview } from "../production/review-wait.js";
 import { SpatialMapRegistry, spatialMapQuerySchema, type SpatialMapArgs } from "../spatial/maps.js";
 
 const instance = { instance_id: z.uuid().optional().describe("Target instance; omit only when exactly one instance is live") };
@@ -230,7 +235,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     const { result, client } = await runtime.mutate("recording.start", args, signal);
     const data = objectResult(result);
     runtime.recordingContexts.set(client.descriptor.instanceId, {
-      ...(args.project_id ? { project_id: args.project_id } : {}),
+      ...productionJobBinding(runtime,args),
       ...(args.scene_id ? { scene_id: args.scene_id } : {}),
       ...(typeof data.take_id === "string" ? { take_id: data.take_id } : args.take_id ? { take_id: args.take_id } : {}),
     });
@@ -334,6 +339,57 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     inputSchema: z.object({ ...instance, request_id: requestId, base_revision: z.string().min(1), operations: z.array(z.record(z.string(), z.unknown())).min(1).max(1024) }), annotations: MUTATE,
   }, safe(async (args, signal) => bridgeMutate(runtime, "timeline.apply", args, signal, "Timeline operations applied.")));
 
+  server.registerTool("replay_path_clearance", {
+    title:"Check entire native camera path",description:"Sweep a half-block camera clearance box over actual native linear paths in frozen replay geometry. Includes native slabs/stairs and missing chunks. Curves, changing-world packets, unknown history, moving shapes and exhausted budgets remain unverified; normal advance_1x supports packet-proven unchanged geometry. Explicit skipping is recorded as skipped.",
+    inputSchema:z.object({...instance,request_id:requestId,start_us:z.number().int().nonnegative(),end_us:z.number().int().positive(),skip_collision_check:z.boolean().default(false)}),annotations:MUTATE,
+  },safe(async(args,signal)=>bridgeMutate(runtime,"replay.path_clearance",args,signal,"Full-path clearance result.")));
+  server.registerTool("replay_camera_preset", {
+    title:"Generate and apply deterministic camera preset",description:"Replace camera and replay-time tracks with a baked preset using an expected revision. Shared interior/exterior defaults; interior start.y is a support search hint. Follow uses eye-relative elevation and immutable-source player samples. Checked application rolls back blocked/unverified paths. Advancing geometry requires complete packet-static history. Follow traces actual native renderer tick envelopes at follow_fps (20/40/60/80/100/120), source start >1s, 50ms-aligned duration and 50ms tail; tracing may take up to 150 seconds. Unsupported packets/history fail closed. Free-form timeline editing remains available.",
+    inputSchema:z.object({...instance,request_id:requestId,base_revision:z.string().min(1),project_id:z.uuid().optional(),shot_id:z.string().optional(),parameters:presetSchema}),annotations:MUTATE,
+  },safe(async(args,signal)=>{
+    const binding=productionJobBinding(runtime,args);
+    const generationJob=args.parameters.preset==="follow" || binding.shot_id ? await runtime.jobs.create("analysis",{...binding,status:"running",cancellable:false,result:{purpose:"camera_generation",base_revision:args.base_revision}}):undefined;
+    try {
+    let parameters=args.parameters;
+    let trajectory:TrajectorySample[]|undefined;
+    let trajectoryProvenance:Record<string,unknown>|undefined;
+    let followGeometry:FollowGeometry|undefined;
+    if(parameters.preset==="follow") {
+      if(parameters.replay_end_us!==undefined && parameters.replay_end_us!==parameters.replay_start_us+parameters.duration_us)throw new SidecarError("camera_conflict","follow source end must equal start plus duration");
+      if(!parameters.player_uuid) throw new SidecarError("invalid_request","follow requires player_uuid");
+      const sample=await runtime.mutate("replay.trajectory",{instance_id:args.instance_id,player_uuid:parameters.player_uuid,start_us:parameters.replay_start_us,end_us:parameters.replay_start_us+parameters.duration_us,geometry_radius:parameters.follow_max_distance,follow_fps:parameters.follow_fps,timeout_ms:180000},signal);
+      const sampled=objectResult(sample.result); trajectory=sampled.samples as TrajectorySample[];
+      followGeometry=sampled.geometry as FollowGeometry|undefined;
+      if(sampled.subject_motion_verified!==true) throw new SidecarError("camera_unverified","Continuous native subject motion/visibility proof is unavailable for this interval; no checked follow was applied.",{source_start_us:parameters.replay_start_us,source_end_us:parameters.replay_start_us+parameters.duration_us,blocked_start_us:objectResult(sampled.temporal_history).blocked_start_us??parameters.replay_start_us,blocked_end_us:objectResult(sampled.temporal_history).blocked_end_us??parameters.replay_start_us+parameters.duration_us,reason:sampled.subject_motion_reason});
+      if(!parameters.skip_collision_check && !followGeometry) throw new SidecarError("camera_unverified","Supported temporal history and loaded geometry are required for checked follow.",objectResult(sampled.temporal_history));
+      const {samples:_,geometry:__,...provenance}=sampled; trajectoryProvenance=provenance;
+    } else if(parameters.profile==="interior") {
+      if(!parameters.start) throw new SidecarError("invalid_request","interior profile requires start as a support search hint");
+      const context=objectResult((await runtime.mutate("replay.camera_context",{instance_id:args.instance_id,start:parameters.preset==="orbit" && parameters.center ? {x:parameters.center.x+Math.cos(parameters.start_angle_degrees*Math.PI/180)*(parameters.radius ?? 3),y:parameters.start.y,z:parameters.center.z+Math.sin(parameters.start_angle_degrees*Math.PI/180)*(parameters.radius ?? 3)} : parameters.start,replay_start_us:parameters.replay_start_us,resolve_support:parameters.interior_height_mode==="support_plus_1_6" && !(parameters.preset==="orbit" && parameters.height!==undefined),orient_open:parameters.preset!=="orbit" && parameters.yaw===undefined && parameters.aim===undefined},signal)).result);
+      parameters={...parameters,...(parameters.preset==="orbit" && parameters.height===undefined && parameters.center ? {height:Number(context.y)-parameters.center.y} : {}),start:{x:Number(context.x),y:Number(context.y),z:Number(context.z)},...(parameters.preset!=="orbit" && parameters.yaw===undefined && !parameters.aim ? {yaw:Number(context.yaw)} : {})};
+    }
+    const generated=parameters.preset==="follow" && !parameters.skip_collision_check ? planFollow(parameters,trajectory!,followGeometry!) : generatePreset(parameters,trajectory);
+    const applied=objectResult((await runtime.mutate("timeline.apply",{instance_id:args.instance_id,base_revision:args.base_revision,operations:generated.operations},signal)).result);
+    let clearance:Record<string,unknown>;
+    try {
+      clearance=objectResult((await runtime.mutate("replay.path_clearance",{instance_id:args.instance_id,start_us:0,end_us:parameters.duration_us,skip_collision_check:parameters.skip_collision_check,...(parameters.preset==="follow"?{follow_player_uuid:parameters.player_uuid,follow_fps:parameters.follow_fps,follow_min_distance:parameters.follow_min_distance,follow_max_distance:parameters.follow_max_distance,follow_elevation:parameters.follow_elevation}: {})},signal)).result);
+      if(!["verified","skipped"].includes(String(clearance.collision_check))) throw new SidecarError("camera_unverified","Path is blocked or unverified; current presets do not relax constraints.",clearance);
+    } catch(error) {
+      await runtime.mutate("timeline.undo",{instance_id:args.instance_id,base_revision:applied.revision,undo_token:applied.undo_token}); throw error;
+    }
+    const path=join(runtime.artifacts.localRoot,"camera-presets",`${crypto.randomUUID()}.json`); await mkdir(join(runtime.artifacts.localRoot,"camera-presets"),{recursive:true});
+    await writeFile(path,JSON.stringify({...generated,trajectory_samples:trajectory,trajectory_provenance:trajectoryProvenance,collision_check:clearance.collision_check,clearance,applied_revision:applied.revision},null,2));
+    const artifact=await runtime.artifacts.registerLocal(path,"application/json",binding);
+    if(binding.shot_id) await runtime.progress.generated(runtime.projects.get(binding.project_id!),binding.shot_id,artifact.id,String(applied.revision),clearance);
+    if(generationJob)await runtime.jobs.update(generationJob.id,{status:"completed",progress:1,result_artifact_ids:[artifact.id],result:{purpose:"camera_generation",timeline_revision:applied.revision,clearance}});
+    return ok("Baked camera preset applied.",{timeline:applied,clearance,generator:generated.generator,path_hash:generated.path_hash,artifact});
+    } catch(error) {
+      if(generationJob)await runtime.jobs.update(generationJob.id,{status:"failed",failure:{code:errorCode(error),message:errorMessage(error)}});
+      if(binding.shot_id)await runtime.progress.blocked(runtime.projects.get(binding.project_id!),binding.shot_id,errorCode(error),errorMessage(error),error instanceof SidecarError || error instanceof BridgeRpcError?error.data:{});
+      throw error;
+    }
+  }));
+
   server.registerTool("replay_preview", {
     title: "Preview replay edit", description: "Create a persistent low-resolution video job or sampled-frame/contact-sheet job before final rendering.",
     inputSchema: z.object({
@@ -346,12 +402,17 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   }, safe(async (args, signal) => {
     const normalized = normalizeOutputRange(args);
     const client = runtime.client(args.instance_id);
-    const job = await runtime.jobs.create("preview", { instance_id: client.descriptor.instanceId, ...(args.project_id ? { project_id: args.project_id } : {}) });
+    const job = await runtime.jobs.create("preview", { instance_id: client.descriptor.instanceId, ...productionJobBinding(runtime,args) });
     if (args.output_mode === "video") {
       const renderArgs = { ...normalized, preset: args.preset ?? "draft_360p", output: args.output ?? `preview-${job.id}.mp4` };
-      const { result } = await runtime.mutate("render.start", renderArgs, signal);
-      const updated = await runtime.jobs.registerBridgeJob(job, client, objectResult(result));
-      return ok("Low-resolution video preview started.", { job: updated });
+      try {
+        const { result } = await runtime.mutate("render.start", renderArgs, signal);
+        const updated = await runtime.jobs.registerBridgeJob(job, client, objectResult(result));
+        return ok("Low-resolution video preview started.", { job: updated });
+      } catch (error) {
+        await runtime.jobs.update(job.id, { status: "failed", failure: { code: errorCode(error), message: errorMessage(error) } });
+        throw error;
+      }
     }
     await runtime.jobs.update(job.id, { status: "running" });
     const controller = runtime.jobs.createAbortController(job.id);
@@ -366,7 +427,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     title: "Validate replay shot range",
     description: "Evaluate the authored output timeline with settled seeks, chunk readiness, camera collision, subject distance, and line-of-sight checks.",
     inputSchema: z.object({
-      ...instance, request_id: requestId, start_us: z.number().int().nonnegative().optional(), end_us: z.number().int().positive().optional(),
+      ...instance, request_id: requestId, project_id:z.uuid().optional(),shot_id:z.string().optional(),start_us: z.number().int().nonnegative().optional(), end_us: z.number().int().positive().optional(),
       start_frame: z.number().int().nonnegative().optional(), end_frame: z.number().int().positive().optional(), fps: z.number().positive().max(240).default(30),
       frames: z.number().int().min(2).max(64).default(8), subject_entity_id: z.number().int().optional(), chunk_radius: z.number().int().min(0).max(4).default(1),
       chunk_timeout_ms: z.number().int().min(0).max(30_000).default(5_000),
@@ -374,7 +435,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   }, safe(async (args) => {
     const normalized = normalizeOutputRange(args);
     const client = runtime.client(args.instance_id);
-    const job = await runtime.jobs.create("analysis", { instance_id: client.descriptor.instanceId, result: { purpose: "replay_range_validation" } });
+    const job = await runtime.jobs.create("analysis", { instance_id: client.descriptor.instanceId,...productionJobBinding(runtime,args), result: { purpose: "replay_range_validation" } });
     await runtime.jobs.update(job.id, { status: "running" });
     const controller = runtime.jobs.createAbortController(job.id);
     void runSampledPreview(runtime, client.descriptor.instanceId, job.id, normalized, controller.signal, true).catch(async (error) => {
@@ -403,6 +464,91 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     title: "Render high-quality still", description: "Start a persistent exact-time still render job for framing or final review.",
     inputSchema: z.object({ ...instance, request_id: requestId, project_id: z.string().optional(), shot_id: z.string().optional(), time_us: z.number().int().nonnegative(), output: z.string().min(1), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), alpha: z.boolean().optional(), anti_aliasing: z.number().int().min(1).max(16).optional() }), annotations: MUTATE,
   }, safe(async (args, signal) => startRenderJob(runtime, "still", "render.still", args, signal)));
+
+  server.registerTool("production_contract_draft", {
+    title: "Draft and review a production contract", description: "Save and automatically open player review, then wait up to wait_timeout_ms (default 50 seconds) for physical Submit or Approve all videos. Submit commits comments for the current video and closes; Approve all videos atomically approves every plan listed in the frozen review window, saves any comment only for the current video, and closes. Browsing Next video keeps the batch open; already-approved plans remain unchanged. Inspect review_wait.status; timeout is not approval. Continue a timed-out wait with production_status using the returned cursor; do not reopen the draft to poll. wait_timeout_ms:0 returns immediately. Never synthesize player decisions. Original request is immutable.",
+    inputSchema: z.object({ ...instance, project_id: z.uuid(), base_hash: z.string().default(""), contract: contractSchema, wait_timeout_ms: z.number().int().min(0).max(50_000).default(50_000) }), annotations: MUTATE,
+  }, safe(async (args, signal) => {
+    runtime.projects.get(args.project_id);
+    const {wait_timeout_ms, ...request} = args;
+    const {result, client} = await runtime.mutate("production.draft",request,signal);
+    const initial = objectResult(result);
+    const state = await waitForReview(initial, reviewCursor(initial), wait_timeout_ms,
+      async signal => objectResult(await client.call("production.status", {project_id:args.project_id}, {deadlineMs:3_000, ...(signal ? {signal} : {})})), signal);
+    await runtime.production.snapshot(args.project_id,state);
+    return ok(`Draft saved; review: ${String(objectResult(state.review_wait).status)}.`,state);
+  }));
+  server.registerTool("production_status", {
+    title: "Read durable production progress", description: "Return edit, assembly, completion, repair budget, player comments, authoritative locked contract and current review presentation state. Optional wait_timeout_ms (up to 50 seconds) waits for Submit/Approve using draft_hash and after_submission_sequence from a previous review_wait, or export_binding and after_decision_sequence from export_review_wait. Export acceptance/rejection is durable across delayed responses and reconnects. Continue after timeout without reopening. Read-only polling never reopens review. Missing presentation means the runtime does not support automatic review. Cached completion is historical; run production_check before claiming current completion.",
+    inputSchema: z.object({...instance,project_id:z.uuid(), wait_timeout_ms:z.number().int().min(0).max(50_000).default(0), draft_hash:z.string().optional(), after_submission_sequence:z.number().int().nonnegative().optional(), export_binding:z.string().optional(), after_decision_sequence:z.number().int().nonnegative().optional()}).superRefine((args,ctx) => {
+      if (args.wait_timeout_ms > 0 && (args.export_binding ? args.after_decision_sequence === undefined : (!args.draft_hash || args.after_submission_sequence === undefined))) ctx.addIssue({code:"custom",message:"Waiting requires a contract or export revision/sequence cursor."});
+    }), annotations: READ,
+  }, safe(async (args,signal) => {
+    const {result,client} = await runtime.read("production.status",{instance_id:args.instance_id,project_id:args.project_id});
+    let state = objectResult(result);
+    if (args.wait_timeout_ms > 0 && args.export_binding) state = await waitForExportReview(state,args.export_binding,args.after_decision_sequence!,args.wait_timeout_ms,
+      async signal => objectResult(await client.call("production.status",{project_id:args.project_id},{deadlineMs:3_000,...(signal ? {signal} : {})})),signal);
+    else if (args.wait_timeout_ms > 0) state = await waitForReview(state, {draft_hash:args.draft_hash!,after_submission_sequence:args.after_submission_sequence!}, args.wait_timeout_ms,
+      async signal => objectResult(await client.call("production.status",{project_id:args.project_id},{deadlineMs:3_000,...(signal ? {signal} : {})})),signal);
+    await runtime.production.snapshot(args.project_id,state);
+    return ok("Production state read.",{production:runtime.production.get(args.project_id),authority:state,progress:await runtime.progress.summary(runtime.projects.get(args.project_id))});
+  }));
+  server.registerTool("production_progress", {
+    title:"Read recoverable production progress",description:"Offline-capable progress computed from the persisted shot plan, generation/geometry evidence, agent visual notes, completed verified media and jobs. Historical completion is never current certification. Partial/interrupted jobs do not count as rendered.",
+    inputSchema:z.object({project_id:z.uuid()}),annotations:READ,
+  },safe(async args=>ok("Production recovery summary.",await runtime.progress.summary(runtime.projects.get(args.project_id)))));
+  server.registerTool("production_visual_review", {
+    title:"Retain agent visual observations",description:"Persist findings after inspecting real completed preview/render artifacts. This is advisory agent evidence, never human approval or mechanical certification. No mandatory human footage review.",
+    inputSchema:z.object({project_id:z.uuid(),shot_id:z.string(),job_id:z.uuid(),outcome:z.enum(["accepted","revise"]),findings:z.string().min(1).max(8000)}),annotations:PROJECT_MUTATE,
+  },safe(async args=>ok("Visual observations saved.",await runtime.progress.visual(runtime.projects.get(args.project_id),args.shot_id,args.job_id,args.outcome,args.findings))));
+  server.registerTool("production_edit", {
+    title: "Set declarative final edit", description: "Set integer-frame trims and straight cuts using completed render job IDs. No transitions, padding, retiming, audio or external editor effects are certified in version 1.",
+    inputSchema:z.object({project_id:z.uuid(),base_revision:z.number().int().nonnegative(),edit:editSchema}),annotations:PROJECT_MUTATE,
+  },safe(async args => {
+    runtime.projects.get(args.project_id);
+    return ok("Edit saved; final evidence invalidated.",{production:await runtime.production.setEdit(args.project_id,args.base_revision,args.edit)});
+  }));
+  server.registerTool("production_assemble", {
+    title:"Assemble final film from trusted plates", description:"Start controlled FFmpeg assembly from the persisted edit and player-locked contract. Finite repair budget: eight assemblies, three identical consecutive failures. Completion must be checked separately.",
+    inputSchema:z.object({...instance,project_id:z.uuid()}),annotations:PROJECT_MUTATE,
+  },safe(async args => {
+    const {result} = await runtime.read("production.status",args), authority=objectResult(result);
+    if (typeof authority.locked_hash !== "string") throw new SidecarError("contract_unlocked","Player must approve the plan in the automatically presented contract review window before final assembly.");
+    const contract=contractSchema.parse(authority.locked_contract), contractHash=authority.locked_hash;
+    const job=await runtime.jobs.create("export",{project_id:args.project_id,status:"running",cancellable:false});
+    void runtime.production.assemble(args.project_id,contract,contractHash,job.id).then(async production => {
+      await runtime.jobs.update(job.id,{status:"completed",progress:1,result:{production}});
+    }).catch(async error => { await runtime.jobs.update(job.id,{status:"failed",failure:{code:errorCode(error),message:errorMessage(error)}}); });
+    return ok("Controlled assembly started.",{job});
+  }));
+  server.registerTool("production_check", {
+    title:"Check deterministic final completion",description:"Verify actual artifact hashes/metadata, locked contract, edit lineage, runtime, shot spans and reuse. A failed or incomplete assembled export automatically opens its separate Review export results screen. Inspect export_presentation for the exact binding: visible, pending, closed, blocked or not_requested. Missing evidence is INCOMPLETE; without an assembled artifact no export review can open. Status polling never reopens a dismissed screen; explicitly check again to re-present. Waits up to wait_timeout_ms (default 50 seconds) for Accept exceptions or Reject and revise. On timeout continue through production_status with export_binding and after_decision_sequence from export_review_wait. Later/Escape defers, never rejects. Only a physical player can accept exceptions; displaying the screen never overrides failures.",
+    inputSchema:z.object({...instance,project_id:z.uuid(),wait_timeout_ms:z.number().int().min(0).max(50_000).default(50_000)}),annotations:MUTATE,
+  },safe(async (args,signal) => {
+    const started=Date.now();
+    const {wait_timeout_ms,...request}=args;
+    const {result}=await runtime.read("production.status",request), authority=objectResult(result);
+    const contract=contractSchema.parse(authority.locked_contract ?? authority.draft);
+    const contractHash=String(authority.locked_hash ?? authority.draft_hash ?? "");
+    let completion=await runtime.production.check(args.project_id,contract,contractHash,typeof authority.locked_hash === "string");
+    const production=runtime.production.get(args.project_id);
+    let exportWait:unknown;
+    let exportPresentation: Record<string,unknown> = {state:"not_requested",reason:"no_assembled_export"};
+    if (production.assembly && typeof authority.locked_hash === "string") {
+      const report={...completion,contract_hash:contractHash,artifact_sha256:production.assembly.sha256,artifact_path:production.assembly.path,edit_revision:production.edit_revision};
+      const submitted=await runtime.mutate("production.report",{...request,report});
+      let current=objectResult(submitted.result);
+      if(completion.status!=="PASS") {
+        current=await waitForExportReview(current,completion.binding,Number(authority.export_decision_sequence??0),wait_timeout_ms===0?0:Math.max(1,Math.min(wait_timeout_ms,50_000-(Date.now()-started))),
+          async signal=>objectResult(await submitted.client.call("production.status",{project_id:args.project_id},{deadlineMs:3_000,...(signal?{signal}:{})})),signal);
+        exportWait=current.export_review_wait;
+      }
+      await runtime.production.snapshot(args.project_id,current);
+      exportPresentation = isObject(current.export_presentation) ? current.export_presentation : {state:"unsupported",reason:"running_mod_lacks_export_review_presentation"};
+      if (isObject(current.override) && current.override.binding === completion.binding && completion.status !== "PASS") completion={...completion,status:"PLAYER_OVERRIDDEN"};
+    }
+    return ok(`Production completion: ${completion.status}.`,{completion,export_presentation:exportPresentation,...(exportWait?{export_review_wait:exportWait}:{})});
+  }));
 
   server.registerTool("project_list", {
     title: "List production projects", description: "List sidecar-owned editor-neutral Replay MCP projects and validation state.", inputSchema: z.object({}), annotations: READ,
@@ -492,7 +638,7 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
     const project = runtime.projects.get(project_id);
     const job = await runtime.jobs.create("export", { project_id, status: "running", cancellable: false });
     try {
-      const exported = await runtime.projects.exportHandoff(project);
+      const exported = await runtime.projects.exportHandoff(project, {...runtime.production.get(project_id),progress:await runtime.progress.summary(project)});
       const artifact = await runtime.artifacts.registerLocal(exported.path, "application/json", { project_id, provenance: { project_revision: project.revision } });
       const updated = await runtime.jobs.update(job.id, { status: "completed", progress: 1, result_artifact_ids: [artifact.id], result: { sha256: exported.sha256 } });
       return ok("Project handoff exported.", { job: updated, artifact: withResourceUri(artifact), manifest: exported.manifest }, [resourceLink(artifact)]);
@@ -567,7 +713,7 @@ async function performWithCapture(runtime: ReplayMcpRuntime, args: Record<string
 
 async function startRenderJob(runtime: ReplayMcpRuntime, kind: "render" | "still", method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
   const client = runtime.client(typeof args.instance_id === "string" ? args.instance_id : undefined);
-  const job = await runtime.jobs.create(kind, { instance_id: client.descriptor.instanceId, ...(typeof args.project_id === "string" ? { project_id: args.project_id } : {}) });
+  const job = await runtime.jobs.create(kind, { instance_id: client.descriptor.instanceId, ...productionJobBinding(runtime,args) });
   try {
     const { result } = await runtime.mutate(method, args, signal);
     const updated = await runtime.jobs.registerBridgeJob(job, client, objectResult(result));
@@ -603,10 +749,15 @@ async function runSampledPreview(runtime: ReplayMcpRuntime, instanceId: string, 
     const timeUs = Math.round(startUs + (endUs - startUs) * fraction);
     const result = objectResult(await runtime.leases.mutate(client, "replay.preview_sample", {
       output_time_us: timeUs, view: "clean", subject_entity_id: args.subject_entity_id,
+      diagnostics_only: validationOnly, width: args.width, height: args.height,
       chunk_radius: args.chunk_radius, chunk_timeout_ms: args.chunk_timeout_ms,
       request_id: `${String(args.request_id ?? jobId)}:sample:${index}`,
     }, signal));
-    const registered = await runtime.registerArtifacts(result, client, { ...metadata, provenance: { ...metadata.provenance, output_time_us: timeUs, replay_time_us: result.replay_time_us } });
+    if (!validationOnly && result.image_source !== "replaymod-native-still/1")
+      throw new SidecarError("capability_unavailable", "Native still sampled previews require the updated Minecraft client; restart before retrying.");
+    const registered = validationOnly ? [] : await runtime.registerArtifacts(result, client, { ...metadata, provenance: { ...metadata.provenance, image_source: result.image_source, output_time_us: timeUs, replay_time_us: result.replay_time_us } });
+    if (!validationOnly && registered.length !== 1)
+      throw new SidecarError("invalid_bridge_result", "Native preview did not return one verified image artifact.");
     artifacts.push(...registered);
     const validation = isObject(result.validation) ? result.validation : {};
     samples.push({ output_time_us: result.output_time_us ?? timeUs, replay_time_us: result.replay_time_us, validation });
@@ -621,6 +772,7 @@ async function runSampledPreview(runtime: ReplayMcpRuntime, instanceId: string, 
   await runtime.jobs.update(jobId, {
     status: "completed", progress: 1, result_artifact_ids: output.map((item) => item.id), warnings: [...new Set(warnings.map(String))],
     result: { purpose: validationOnly ? "replay_range_validation" : "replay_preview", valid: errors.length === 0, errors, warnings, samples,
+      image_source: validationOnly ? "none" : "replaymod-native-still/1",
       start_us: startUs, end_us: endUs, timeline_revision: timelineRevision, sampled_frame_ids: artifacts.map((item) => item.id), output_mode: validationOnly ? "validation" : args.output_mode },
   });
 }
@@ -759,4 +911,10 @@ function insideBounds(item: Record<string, unknown>, bounds: Record<string, unkn
 function limited(value: unknown, limit: unknown): unknown[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, typeof limit === "number" ? limit : value.length);
+}
+
+function productionJobBinding(runtime:ReplayMcpRuntime,args:Record<string,unknown>):Partial<JobRecord> {
+ if(typeof args.shot_id!=="string")return typeof args.project_id==="string"?{project_id:args.project_id}:{};
+ if(typeof args.project_id!=="string")throw new SidecarError("invalid_request","shot_id requires project_id");
+ return shotBinding(runtime.projects.get(args.project_id),args.shot_id);
 }

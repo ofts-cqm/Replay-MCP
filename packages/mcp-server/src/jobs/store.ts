@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { JsonCollection, type AuditLog } from "../persistence.js";
 import type { ArtifactRecord, ArtifactStore } from "../artifacts/store.js";
 import type { BridgeClient } from "../bridge/client.js";
@@ -14,6 +16,9 @@ export interface JobRecord {
   duration_ms?: number;
   instance_id?: string;
   project_id?: string;
+  shot_id?: string;
+  plan_hash?: string;
+  timeline_revision?: string;
   progress: number;
   cancellable: boolean;
   bridge_backed: boolean;
@@ -24,6 +29,7 @@ export interface JobRecord {
   failure?: { code: string; message: string };
   result?: Record<string, unknown>;
   owner_session_id?: string;
+  owner_process?: { pid: number; host: string; start: string };
 }
 
 export class JobStore {
@@ -47,7 +53,7 @@ export class JobStore {
   async load(): Promise<void> {
     await this.#jobs.load();
     for (const job of this.list()) {
-      if (["queued", "running"].includes(job.status)) {
+      if (["queued", "running"].includes(job.status) && ownerEnded(job)) {
         await this.update(job.id, {
           status: "failed",
           failure: { code: "sidecar_restarted", message: "the owning sidecar session ended before the job reached a terminal state" },
@@ -67,6 +73,7 @@ export class JobStore {
       bridge_backed: false, logs: [], warnings: [], result_artifact_ids: [],
       ...fields,
       owner_session_id: this.#sessionId,
+      owner_process: {pid:process.pid,host:hostname(),start:processStart(process.pid) ?? "unknown"},
     };
     await this.#jobs.set(job);
     await this.#audit.append("job.created", { job_id: job.id, kind });
@@ -127,7 +134,7 @@ export class JobStore {
     const bridgeId = typeof params.job_id === "string" ? params.job_id : undefined;
     if (!bridgeId) return;
     const job = this.list().find((item) => item.bridge_job_id === bridgeId && item.instance_id === client.descriptor.instanceId);
-    if (!job) return;
+    if (!job || job.owner_session_id!==this.#sessionId || ["completed","failed","cancelled"].includes(job.status)) return;
     if (method === "render.progress") {
       const progress = typeof params.progress === "number" ? Math.max(0, Math.min(1, params.progress)) : job.progress;
       await this.update(job.id, { progress, status: "running" });
@@ -154,7 +161,7 @@ export class JobStore {
   async #recordingEvent(client: BridgeClient, params: Record<string, unknown>): Promise<void> {
     if (params.status !== "finalized" && params.status !== "recoverable") return;
     const job = this.list().filter((item) =>
-      item.kind === "analysis" && item.status === "running" && item.instance_id === client.descriptor.instanceId && item.result?.purpose === "recording_finalization")
+      item.owner_session_id === this.#sessionId && item.kind === "analysis" && item.status === "running" && item.instance_id === client.descriptor.instanceId && item.result?.purpose === "recording_finalization")
       .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
     if (!job) return;
     try {
@@ -182,7 +189,7 @@ export class JobStore {
     const bridgeId = typeof params.job_id === "string" ? params.job_id : undefined;
     if (!bridgeId) return;
     const job = this.list().find((item) => item.bridge_job_id === bridgeId && item.instance_id === client.descriptor.instanceId);
-    if (!job) return;
+    if (!job || job.owner_session_id!==this.#sessionId || ["completed","failed","cancelled"].includes(job.status)) return;
     if (params.status === "running") {
       await this.update(job.id, { progress: typeof params.progress === "number" ? params.progress : job.progress, result: { ...job.result, ...params } });
       return;
@@ -201,4 +208,20 @@ export class JobStore {
       ...(completed ? {} : { failure: { code: "recording_recoverable", message: typeof params.error === "string" ? params.error : "recording finalization requires recovery" } }),
     });
   }
+}
+
+// Linux process start ticks distinguish PID reuse. Unknown/remote owners remain
+// pending; starting an observer must never interrupt another live sidecar.
+function processStart(pid: number): string | undefined {
+  try { return readFileSync(`/proc/${pid}/stat`,"utf8").split(") ")[1]?.split(" ")[19]; }
+  catch { return undefined; }
+}
+export function ownerEnded(job: JobRecord): boolean {
+  const owner=job.owner_process;
+  if (!owner) return false; // legacy owner cannot be proven dead; retain unfinished, never certify it
+  if (owner.host!==hostname()) return false;
+  const start=processStart(owner.pid);
+  if (start!==undefined) return owner.start!=="unknown" && start!==owner.start;
+  try { process.kill(owner.pid,0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code==="ESRCH"; }
 }

@@ -120,7 +120,7 @@ export class ProjectStore {
     return { valid: errors.length === 0, errors, warnings };
   }
 
-  async exportHandoff(project: ProjectManifest): Promise<{ path: string; sha256: string; manifest: Record<string, unknown> }> {
+  async exportHandoff(project: ProjectManifest, production?: unknown): Promise<{ path: string; sha256: string; manifest: Record<string, unknown> }> {
     const validation = this.validate(project);
     if (!validation.valid) throw new SidecarError("project_invalid", "project must pass validation before export", { errors: validation.errors });
     const referenced = referencedArtifacts(project, this.#artifacts);
@@ -128,6 +128,9 @@ export class ProjectStore {
       format: "replay-mcp.handoff/1", exported_at: new Date().toISOString(),
       project_id: project.id, project_revision: project.revision,
       frame_rate: project.frame_rate, resolution: project.resolution,
+      creative_brief: project.creative_brief,
+      production: production ?? null,
+      completion_note: "Handoff validation is structural only; production completion requires production_check with fresh evidence.",
       scenes: project.scenes,
       artifacts: referenced.map((artifact) => ({
         id: artifact.id, path: artifact.path, mime_type: artifact.mime_type,

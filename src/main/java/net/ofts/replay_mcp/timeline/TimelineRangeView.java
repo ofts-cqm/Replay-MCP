@@ -18,9 +18,20 @@ public final class TimelineRangeView implements Timeline {
     private final Timeline delegate;
     private final long startMs;
     private final long durationMs;
+    private final boolean frozen;
     private final List<Path> paths;
 
     public TimelineRangeView(Timeline delegate, long startMs, long endMs) {
+        this(delegate, startMs, endMs, false);
+    }
+
+    /** One native 10-fps frame, including an authored endpoint, with no extrapolation. */
+    public static TimelineRangeView still(Timeline delegate, long timeMs) {
+        return new TimelineRangeView(delegate, timeMs, timeMs + 100, true);
+    }
+
+    private TimelineRangeView(Timeline delegate, long startMs, long endMs, boolean frozen) {
+        this.frozen = frozen;
         if (startMs < 0 || endMs <= startMs) throw new IllegalArgumentException("invalid timeline range");
         this.delegate = delegate;
         this.startMs = startMs;
@@ -28,7 +39,7 @@ public final class TimelineRangeView implements Timeline {
         this.paths = delegate.getPaths().stream().map(RangePath::new).map(Path.class::cast).toList();
     }
 
-    public long sourceTime(long outputMs) { return startMs + clamp(outputMs); }
+    public long sourceTime(long outputMs) { return startMs + (frozen ? 0 : clamp(outputMs)); }
     public long durationMs() { return durationMs; }
 
     @Override public List<Path> getPaths() { return paths; }
@@ -57,10 +68,10 @@ public final class TimelineRangeView implements Timeline {
             Set<Long> times = new LinkedHashSet<>();
             times.add(0L);
             path.getKeyframes().stream().map(Keyframe::getTime)
-                    .filter(time -> time > startMs && time < startMs + durationMs)
+                    .filter(time -> !frozen && time > startMs && time < startMs + durationMs)
                     .map(time -> time - startMs).forEach(times::add);
             times.add(durationMs);
-            keyframes = times.stream().map(time -> new RangeKeyframe(path, time, startMs + time)).map(Keyframe.class::cast).toList();
+            keyframes = times.stream().map(time -> new RangeKeyframe(path, time, sourceTime(time))).map(Keyframe.class::cast).toList();
         }
 
         @Override public Timeline getTimeline() { return TimelineRangeView.this; }

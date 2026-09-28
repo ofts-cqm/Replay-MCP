@@ -12,6 +12,28 @@ tool/control contracts, read
 Building and scene coverage is camera-led. Unlike player coverage, the camera
 should normally move in one deliberate, continuous trace throughout each shot.
 
+## Preset and clearance support
+
+Use `replay_camera_preset` for parameterized static, slide, rise, push, pan, or
+orbit shots when available. Duration and replay-time mode are explicit. The shared
+interior profile defaults to support +1.6 blocks and open-space orientation when
+no aim is requested; explicit height is available. Current support resolves the
+starting surface, not a smoothed stair-following floor trajectory.
+
+`replay_path_clearance` checks native linear paths in frozen geometry with swept
+clearance, including intermediate walls. Advancing linear 1x paths are supported
+only when a complete packet scan proves static geometry; changing worlds,
+unsupported packets, curves and unknown chunks remain unverified. Explicit skips remain skipped and cannot meet a contract
+requiring verified collision safety. Rendered previews still establish composition. Push/pull defaults to the supplied
+camera yaw/pitch; negative distance pulls back. Pan/tilt takes starting yaw/pitch;
+combining it with a fixed aim is a conflict. Orbit uses its center/aim and resolves
+interior support at the actual orbit start. Explicit orbit height overrides that
+default. A rejected preset restores the prior timeline when the lease remains
+valid; after takeover, stop and inspect state without reacquiring automatically.
+
+See [preset fields and examples](../replay-director-workflow/references/production-camera-recovery.md#preset-fields-and-profiles)
+for each movement, interior defaults and manual-path fallback.
+
 ## Survey before keyframing
 
 1. When spatial maps are available, begin with a size-16 or size-32 surface map

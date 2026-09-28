@@ -3,6 +3,11 @@
 This reference is self-contained because a deployed agent may have the plugin
 but not the Replay MCP repository or architecture document.
 
+For exact preset fields, contract examples, batch-review semantics, evidence and
+restart procedures, read [Production, camera, and recovery details](production-camera-recovery.md)
+when performing those operations. These details describe shipped behavior, not
+unimplemented architecture proposals.
+
 ## Information boundary
 
 Trust concrete facts supplied by the user, including coordinates, destinations,
@@ -75,7 +80,7 @@ Replay MCP has three different control contexts. Never mix their actions:
 | --- | --- | --- |
 | Live game | Observe or operate the current player and mark a logical take | `game_*`, `recording_*` |
 | Replay | Open an immutable recording copy, control playback, author cameras, preview, validate, render | `replay_*`, `render_*` |
-| Post-production | Assemble rendered shot plates into the deliverable | a separately installed editor MCP |
+| Post-production | Assemble rendered shot plates into the deliverable | `production_edit` / `production_assemble` / `production_check`, or an external editor for unsupported effects |
 
 `game_perform` changes live player inputs. `replay_playback` changes the replay
 viewer. Timeline camera keyframes change only the replay camera. None of these
@@ -127,7 +132,9 @@ do not loop on `control_acquire` or replay a mutation automatically.
 - `recording_start`, `recording_stop`, `recording_finalize_and_open`, and
   `recording_add_marker`;
 - `replay_open`, `replay_close`, `replay_save`, and `replay_playback`;
-- `replay_timeline_apply`, `replay_preview`, and `replay_validate_range`;
+- `replay_timeline_apply`, `replay_camera_preset`, `replay_path_clearance`,
+  `replay_preview`, and `replay_validate_range`;
+- `production_contract_draft` and `production_check` when publishing the report;
 - `render_start`, `render_still`, and cancellation of bridge-backed jobs.
 
 Observations, queries, status, job reads, artifact reads, replay metadata,
@@ -286,3 +293,243 @@ the restriction and ask the user for explicit permission or direction before
 continuing. User permission does not override a higher-priority prohibition. If
 the host has no subagent capability, write the same checkpoint and deliberately
 switch tool vocabularies before the next context.
+
+## Deterministic production completion (source implementation v1)
+
+For a final-film request, create the project and call `production_contract_draft`
+with the original request and frame-based requirements. The contract tool must
+automatically present the physical player review window for that project; do not
+ask the player to press F10 or navigate menus as the normal approval workflow.
+Opening the window is an agent action. Commenting, locking, and overriding remain
+physical player actions; never simulate their clicks or keys.
+
+The automatic contract popup is **Review video plan**. It shows plain-language
+Plan, Changes, Your request, and Comments pages. **Submit** saves the typed
+comment for the current video and closes without approval. **Approve all videos (N)**
+atomically approves all drafted videos listed in that window, saves the current
+video's typed comment, then closes. The tooltip explains this scope. The list and
+revisions are fixed when the window opens; a changed revision rejects the whole
+batch. Already-approved plans without new comments remain untouched. **Next video**
+browses this same batch and must not report the other plans as dismissed. Typing alone is temporary; Escape discards
+unsent input. Neither submission nor approval is inferred from window closure. It contains no export-override action. Export results and
+player exceptions belong to the separate **Review export results** screen,
+automatically opened by `production_check` for a failed/incomplete assembled
+export (Replay MCP Controls is only a manual fallback). Never direct the player to approve a plan
+as a substitute for accepting an export exception, or vice versa.
+
+Treat draft persistence, review-window presentation, and player approval as three
+separate states. Inspect the tool's presentation result and `production_status`
+before telling the player the contract is ready on screen (`presentation` in the
+draft result, `authority.presentation` in status). The presentation
+state must be `visible` for the expected `project_id` and `draft_hash`
+(the contract may be another video in the open batch, not the current page); `pending`,
+`closed`, `blocked`, or `not_requested` is not evidence of a displayed window.
+If presentation is pending behind an active operation, wait for the reported safe
+presentation state;
+do not claim the window is open. If presentation is blocked or unsupported by the
+running mod, report the actual integration/version problem rather than asking the
+player to find a window that was never displayed. F10 is a manual fallback, not a
+required step for a contract proposal.
+
+Verify the selected instance and its actual screen when presentation fails. A
+saved draft does not prove a replay was opened, and opening a replay does not
+prove review was displayed. Contract review itself need not require a world;
+for a recorded-clip production, separately identify the finalized source and open
+its immutable working copy before claiming replay editing or rendering has begun.
+
+The draft tool waits for physical submission by default (`wait_timeout_ms: 50000`;
+use `0` only when an immediate return is needed for diagnostics). Tell the player
+before the call that Submit sends comments and Approve all videos saves approval and
+closes. Keep the agent turn active while awaiting review; do not finish with
+“message me when done.” No extra chat message is needed while the tool is waiting.
+
+Read `review_wait.status`. On `timeout`, continue through `production_status`
+with `wait_timeout_ms: 50000`, `draft_hash`, and `after_submission_sequence` copied
+from `review_wait`. The status response puts these fields under `authority`.
+This is a bounded wait in the sidecar; do not rapidly poll or re-draft to wait.
+The durable sequence catches a submission made between calls or across reconnects.
+On `commented`, read the submitted comments, revise against `base_hash`, and
+present the new proposal. On `approved` or `already_approved`, verify the exact
+`locked_hash` before continuing. If approval includes comments, read them too;
+a change to the approved contract still requires a newly reviewed revision.
+On `closed`, no submission is implied: read fresh authority before diagnosing
+a dismissal, since a physical decision may have arrived afterward. A matching
+locked contract remains valid even after the window closes or Minecraft restarts.
+Do not reopen automatically. On `blocked`,
+`unsupported`, `superseded`, cancellation, or disconnect, report/resolve the actual
+state; never interpret it as approval. A new tool wait can resume observation,
+but cannot wake a session whose agent turn has already ended.
+
+Review temporarily rejects conflicting mutations; wait for it to close without
+reacquiring a still-valid lease. Read-only waits do not extend director ownership
+indefinitely or restore revoked control. Proceed with contract-dependent work
+only after the matching revision is physically locked. Incidental mouse input
+and review typing must not revoke control; if they do, report the defect rather
+than repeatedly reacquiring.
+
+Default runtime tolerance is ±20%, preferred shots 3–10 seconds, hard shots 1–15
+seconds, no shot-count limit, and no footage reuse. Incorporate explicit player
+requirements in the reviewed contract. Unimplemented measurable requirements go
+in `mechanical_requirements` and remain INCOMPLETE; subjective composition belongs
+in `subjective_criteria` and is outside the mechanical guarantee.
+
+Use `replay_camera_preset` for shared static/slide/rise/push/pan/orbit/follow
+baking, or keep `replay_timeline_apply` for manual paths. Presets replace camera
+and replay-time tracks against an expected revision. Duration and replay-time mode
+are explicit. Interior defaults resolve one native support surface +1.6 blocks;
+`interior_height_mode: explicit` retains the supplied height. This is not a stair
+following floor-height solver. Follow uses player-eye-relative elevation (default
++1.5), seeded rear/side variation, and horizontal 3–5-block defaults. Stops retain
+heading and teleport intervals fail. `follow-candidate-planner/1` searches stable
+rear-side/distance/elevation candidates, validates every connecting segment, runs
+eight constrained smoothing passes, and revalidates the actual native path.
+Supply project_id/shot_id from the persistent shot plan to retain generation,
+seed, provenance, geometry and blocked-interval checkpoints independently.
+
+Call `replay_path_clearance` for the entire actual native path. Policy `native-linear-frozen-sweep/3` certifies
+only frozen replay time with linear interpolation and loaded static block collision
+shapes, sweeping a half-block clearance box. Advancing linear 1x paths use
+`native-linear-packet-static-sweep/1`: a bounded full packet scan must establish
+unchanged geometry. Unknown packets, block/chunk changes, moving shapes and
+exhausted budgets return unverified. This is supported advancing static geometry,
+not general simulation of changing/moving obstacles.
+
+Follow additionally traces the actual native renderer at a bound `follow_fps`
+(20/40/60/80/100/120, default 60), checks joined 50 ms eye interpolation envelopes,
+and binds `native-follow-tick-envelope/1` to player/source/session/path/FPS.
+Source start must exceed 1s; duration is 50ms-aligned with a 50ms source tail.
+Preroll/tail history must also be supported. Final rendering with a different FPS
+or native range is rejected until regenerated. Render a complete checked plate
+and trim its frames in controlled assembly. Source `replay_end_us`, when supplied, must equal
+start+duration. Trace scratch frames are not visual review or final media.
+Pose changes, teleports, missing players, unsupported tick phase or incomplete
+history fail closed. Visibility means a collision-shape-free conservative eye-ray
+hull; it does not prove full-body composition or visible noncollision geometry.
+A skip is recorded as skipped, never safe, and cannot satisfy `require_collision`.
+Sampled `replay_validate_range` remains a preview diagnostic, not whole-path proof.
+The sweep checks a neighboring block shell for protruding vanilla shapes such as
+fences, and fails closed for unloaded chunks, modded blocks, moving pistons,
+uncovered timeline ranges and nonlinear time mappings. Its block budget is 100,000.
+It reports the blocked segment and earliest conservative contact position/time.
+Confirm the client advertises policy `/3`; earlier receipts cannot satisfy required
+collision evidence because their client chunk-presence guard could falsely pass.
+After upgrading, recheck and rerender affected safety-required plates. The
+half-block bound includes the near plane only for standard unstabilized rendering,
+FOV <=110 and aspect <=4; entities and visible non-collision geometry are excluded.
+Evidence binds immutable replay hash, working-copy session, native timeline hash
+(including source-time mapping), checked output range and projection policy. Render
+receipts reuse it only inside that envelope. Recheck after edits/reopen/settings
+changes; manual paths use the identical check. Do not reuse stale evidence.
+
+Basic preset generator version `camera-presets/3` preserves requested duration.
+Push/pull defaults to yaw/pitch direction, negative distance pulls/falls, pan plus
+fixed aim is rejected, and orbit orientation comes from center/aim. Interior orbit
+support is resolved at its actual starting XZ, using start.y as the search ceiling.
+Explicit height and direction are creative inputs; do not silently replace them.
+When a checked preset is blocked/unverified, normal rollback restores the prior
+revision. If lease loss prevents rollback, read state and stop at human_override;
+never reacquire to finish a rollback without explicit recovery authorization.
+
+Final plates must come from completed high-quality native render jobs. Submit job
+IDs and integer-frame trims to `production_edit`, then `production_assemble`.
+Version 1 supports straight cuts only, without audio, overlays, transitions, retiming
+or non-footage padding. Those requirements remain unsupported, not silently omitted.
+External editor exports have no trusted assembly receipt and cannot be called PASS.
+
+Run `production_check` against the actual final artifact. PASS covers only supported
+mechanical rules. FAIL preserves known violations; INCOMPLETE preserves missing
+or unsupported evidence. Repair ordinary failures without requesting an exception.
+Assembly has a persisted limit of eight attempts and three identical consecutive
+failures; exhaustion never waives a rule. Only the player can override the exact
+export and findings using **Accept exceptions** in the separate
+**Review export results** screen; the result is PLAYER_OVERRIDDEN,
+not PASS. A contract popup does not imply an override was presented or approved.
+There is no mandatory human footage-review gate. Automated visual review and actual
+rendered-frame inspection remain useful for composition and revisions.
+
+After restart/compaction, read `production_progress` (works without a live client),
+`production_status`, `project_get`, and job state. Persisted summaries are computed
+from shot-plan hashes, generation/geometry checkpoints, current artifact hashes,
+completed native media receipts and job owners. Pass project_id/shot_id on presets,
+previews, range validation and renders. Changes to one shot invalidate its evidence;
+finished unrelated media is retained. A new observer sidecar does not interrupt a
+live owner's jobs. A proven-dead owner leaves failed/interrupted jobs, never finished
+partial artifacts. Assembly ownership is persisted, and an edit changed during an
+export cannot acquire its receipt. No in-place renderer resume is promised.
+
+After inspecting actual completed preview/video artifacts, use
+`production_visual_review` to retain accepted/revise observations. These are agent
+visual notes bound to media hashes, distinct from geometry and final certification;
+no human footage gate is introduced. Handoffs include the computed recovery state.
+The summary's historical completion/assembly is not a current passing check.
+Cached completion is historical: re-run `production_check` before delivery. Handoffs
+retain the brief and last observed production authority; structural project validation
+alone never certifies a final film. Native-render lineage currently supports at most
+8,000 frames per plate and excludes spectator paths; missing lineage is incomplete.
+
+### Failed-export review presentation
+
+`production_check` publishes the deterministic report and automatically opens
+**Review export results** for an assembled export with unresolved failures.
+Inspect `export_presentation` in the tool result, or `authority.export_presentation`
+in `production_status`: require `visible` for the expected project and report
+`binding` before claiming the screen is open. It is separate from contract
+`presentation`. Pending means an active operation or player review is in the way;
+status reads never reopen dismissed windows. An explicit new check re-presents
+the current failed export. PASS and already accepted exceptions do not prompt.
+Without an assembled artifact, repair the missing evidence first: there is no
+finished export to review. `unsupported` means the running mod needs updating.
+Do not direct the player to F10 as the normal failed-export flow. Opening the
+screen is not acceptance; only the physical player can accept exceptions for
+that exact export. Never simulate that button or rewrite authority files.
+
+
+### Delayed export decisions and AFK review
+
+`production_check` waits for the physical export decision by default. **Accept
+exceptions** records a binding-specific exception and closes; **Reject and revise**
+records rejection and closes; **Later** or Escape only defers. Never infer
+rejection from dismissal or a timeout. On `export_review_wait.status: timeout`,
+keep the turn active and continue through `production_status` with
+`wait_timeout_ms: 50000`, `export_binding` from the returned `binding`, and
+`after_decision_sequence`. This wait is read-only and does not reopen the UI or
+require a lease. Release unused director control during long review waits; do not
+renew or reacquire control merely to observe the decision.
+
+A delayed decision is durable, including decisions made between wait calls or
+while disconnected. `accepted` requires the matching saved override; `rejected`
+means repair within the approved contract, then revalidate; `deferred` means stop
+waiting without interpreting a decision. Changing the export supersedes the old
+binding. Do not end a turn claiming you will resume automatically: this wait can
+resume an active agent, but a finished/closed Codex session needs host-level event
+integration or another user message. Do not claim that integration exists.
+
+Artifact/project/job stores now merge unrelated records under a cross-process
+write lock and reject stale same-record writes. Refresh after a record conflict;
+never restore stale whole index snapshots. An abandoned lock fails closed with a
+bounded timeout; stop all writers before investigating/removing that lock.
+Recover missing artifact entries only from completed native render descriptors
+whose files still pass the original size/checksum checks. Never fabricate receipts.
+
+
+### Sampled preview image source
+
+Frame/contact-sheet previews use native Replay Mod still rendering at each exact
+output time, including the authored endpoint. Check capability
+`sampled_preview_renderer: replaymod-native-still/1`; reload older clients before
+retrying. Width/height are honored (default 640x360). This is more expensive than
+viewport screenshots, so begin with a small sample count or use a draft video.
+`replay_validate_range` returns geometry diagnostics without images. Its `valid`
+flag and `chunks_ready` describe geometry, never successful visual rendering.
+Inspect actual preview images; game observation remains a viewport capture.
+
+### Evidence binding after the phase 4/5 fixes
+
+Finalized-source metadata/import reads the immutable ZIP and works while its
+working copy is open; do not close the replay merely to import clips. Preview
+jobs retain the supplied project/shot plan binding for visual notes. A plan/source
+or output-settings change makes older progress evidence stale; regenerate only
+affected shots. Old binding-version evidence is also stale after this upgrade.
+Follow FPS/full-range requirements persist independently of collision rechecks
+and replay reopening. Generic or skipped clearance cannot erase them. Regenerate
+follow paths authored before this upgrade to establish the new durable binding.

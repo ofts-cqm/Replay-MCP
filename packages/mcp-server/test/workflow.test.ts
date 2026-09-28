@@ -17,6 +17,33 @@ describe("in-process MCP filmmaking workflow", () => {
     await fake?.close().catch(() => undefined);
   });
 
+  it("retains shot bindings through all preview modes and rejects stale visual notes", async () => {
+    const root=await mkdtemp(join(tmpdir(),"preview-binding-"));
+    fake=await createFakeBridge(join(root,"game"));
+    built=await buildServer({dataDir:join(root,"data"),gameDirs:[fake.gameDir],guessedGameDirs:[],discoveryIntervalMs:60000,command:"serve"});
+    const pair=InMemoryTransport.createLinkedPair();client=new Client({name:"binding-test",version:"1"});
+    await built.server.connect(pair[1]);await client.connect(pair[0]);
+    const entities=structured(await call(client,"game_query",{kind:"entities",type:"minecraft:player"})).result as unknown[];
+    expect(entities).toHaveLength(1);
+    expect(structured(await call(client,"game_query",{kind:"entities",type:"minecraft:zombie"})).result).toEqual([]);
+    let project=await built.runtime.projects.create({title:"bound preview"});
+    project=await built.runtime.projects.apply(project.id,project.revision,[{op:"upsert_scene",scene:{id:"s",shots:[{id:"a",duration_us:3000000}]}}]);
+    await call(client,"control_acquire",{});
+    const jobs:string[]=[];
+    for(const output_mode of ["frames","contact_sheet","video"]) {
+      const result=structured(await call(client,"replay_preview",{project_id:project.id,shot_id:"a",output_mode,frames:2,start_us:0,end_us:3000000}));
+      const job=result.job as {id:string;shot_id:string;plan_hash:string};jobs.push(job.id);
+      expect(job.shot_id).toBe("a");expect(job.plan_hash).toMatch(/^[a-f0-9]{64}$/);
+      await waitFor(async()=>built!.runtime.jobs.get(job.id)?.status==="completed");
+      await call(client,"production_visual_review",{project_id:project.id,shot_id:"a",job_id:job.id,outcome:"revise",findings:"Isolated fixture review"});
+    }
+    const noProject=await client.callTool({name:"replay_preview",arguments:{shot_id:"a",output_mode:"frames",start_us:0,end_us:3000000}});
+    expect(noProject.isError).toBe(true);
+    project=await built.runtime.projects.apply(project.id,project.revision,[{op:"upsert_scene",scene:{id:"s",shots:[{id:"a",duration_us:4000000}]}}]);
+    const stale=await client.callTool({name:"production_visual_review",arguments:{project_id:project.id,shot_id:"a",job_id:jobs[0],outcome:"accepted",findings:"Old fixture"}});
+    expect(stale.isError).toBe(true);
+  });
+
   it("covers offline status and the full fake-bridge acceptance flow", async () => {
     const root = await mkdtemp(join(tmpdir(), "replay-mcp-workflow-"));
     const gameDir = join(root, "game");
@@ -37,8 +64,8 @@ describe("in-process MCP filmmaking workflow", () => {
     await client.connect(pair[0]);
 
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(39);
-    expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(39);
+    expect(tools.tools).toHaveLength(48);
+    expect(new Set(tools.tools.map((tool) => tool.name)).size).toBe(48);
 
     const online = structured(await call(client, "system_status", {}));
     expect(online.state).toBe("online");
@@ -99,6 +126,11 @@ describe("in-process MCP filmmaking workflow", () => {
     const validation = structured(await call(client, "replay_validate_range", { start_us: 0, end_us: 1_000_000, frames: 2 }));
     const validationJob = validation.job as Record<string, unknown>;
     await waitFor(async () => (structured(await call(client!, "job_get", { job_id: validationJob.id })).job as Record<string, unknown>).status === "completed");
+
+    const diagnosticJob = (structured(await call(client, "job_get", {job_id: validationJob.id})).job as Record<string, unknown>);
+    expect(diagnosticJob.result_artifact_ids).toEqual([]);
+    expect(diagnosticJob.result).toMatchObject({image_source:"none", sampled_frame_ids:[]});
+    expect((structured(await call(client, "job_get", {job_id:previewJob.id})).job as Record<string,unknown>).result).toMatchObject({image_source:"replaymod-native-still/1"});
 
     expect((structured(await call(client, "render_validate", { output: "clip.mp4" })).result as Record<string, unknown>).valid).toBe(true);
     const render = structured(await call(client, "render_start", { output: "clip.mp4", preset: "high_quality", start_us: 0, end_us: 1_000_000, validation_job_id: validationJob.id }));

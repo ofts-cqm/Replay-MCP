@@ -50,7 +50,7 @@ describe("portable and Codex plugin packaging", () => {
       command: launch.command,
       args: launch.args,
       cwd: resolve(plugin, launch.cwd),
-      env: { ...stringEnvironment(process.env), REPLAY_MCP_DATA_DIR: resolve(dataRoot, "data") },
+      env: { ...stringEnvironment(process.env), REPLAY_MCP_DATA_DIR: resolve(dataRoot, "data"), REPLAY_MCP_GAME_DIR: resolve(dataRoot, "empty-game") },
       stderr: "pipe",
     });
     const client = new Client({ name: "plugin-startup-smoke", version: "1.0.0" }, { versionNegotiation: { mode: "legacy" } });
@@ -59,7 +59,7 @@ describe("portable and Codex plugin packaging", () => {
     try {
       await client.connect(transport);
       const tools = await client.listTools();
-      expect(tools.tools, stderr).toHaveLength(39);
+      expect(tools.tools, stderr).toHaveLength(48);
       const status = await client.callTool({ name: "system_status", arguments: {} });
       expect(status.isError, stderr).not.toBe(true);
       expect(status.structuredContent).toMatchObject({ state: "offline" });

@@ -110,7 +110,7 @@ export async function confinedRealPath(path: string, allowedRoots: string[]): Pr
   throw new SidecarError("artifact_path_denied", "artifact path is outside the authenticated instance roots");
 }
 
-async function hashFile(path: string): Promise<string> {
+export async function hashFile(path: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
   return hash.digest("hex");

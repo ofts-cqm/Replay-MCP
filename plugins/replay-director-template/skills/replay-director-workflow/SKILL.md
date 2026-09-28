@@ -20,6 +20,10 @@ finalization, jobs, and the public tool groups.
    live. Check the runtime mode, policies, capabilities, and artifact roots.
 2. Create or open one project and translate the request into ordered scenes,
    shots, and a single intended deliverable.
+   Draft the production contract using the automatic review-window flow in
+   Replay MCP operations. Explain the physical Submit/Approve all videos actions before
+   calling the tool, then wait for submission. A saved draft is not approval;
+   inspect the returned review state. Only the player may lock the contract.
 3. Create the temporary request record required by Replay MCP operations. Store
    the initial request verbatim before scouting, keep its absolute path in every
    checkpoint, and append later user-approved changes without rewriting it.
@@ -126,12 +130,22 @@ user before continuing if a governing restriction prevents required release.
 ## Finish in post-production
 
 Read [Replay post-production](../replay-post-production/SKILL.md). When a
-capable editor is available, use Replay for camera/timing work and validated
-shot plates; do most trimming, scene ordering, combining, and transitions in
-the editor. Maintain one final timeline and one master unless the user
+certified straight-cut deliverable is requested, use controlled production
+assembly. Use an external editor for unsupported creative effects and disclose
+that those exports lack a trusted assembly receipt. Replay provides camera/time
+work and verified shot plates for either route. Maintain one final timeline and one master unless the user
 explicitly asks for multiple outputs.
 
 Validate the project and export the handoff. Release control exactly once in a
 final cleanup path after all Replay MCP mutations and bridge-backed jobs are
 finished. If human override, disconnect, stale fencing, or genuine lease loss
 occurs, stop mutations and report it; do not loop on reacquisition.
+
+Contract review waits in `production_contract_draft` by default. **Submit** commits
+comments for the current video and closes; **Approve all videos (N)** commits
+approval for every plan listed in the window and closes. Any typed comment
+applies only to the current video. Already-approved plans remain unchanged.
+Continue a timed-out wait via `production_status` with the returned
+revision/sequence cursor, following the shared operations reference. Keep the
+turn active while waiting; do not ask the player to send an extra chat message.
+Escape discards unsent input and never approves.

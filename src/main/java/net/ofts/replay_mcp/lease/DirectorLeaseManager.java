@@ -11,6 +11,7 @@ import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 public final class DirectorLeaseManager {
     public enum RevocationReason { RELEASED, EXPIRED, IDLE, DISCONNECTED, HUMAN_OVERRIDE, EMERGENCY_STOP }
@@ -19,12 +20,22 @@ public final class DirectorLeaseManager {
     private final Duration ttl;
     private final Duration idleCeiling;
     private final SecureRandom random;
-    private final Consumer<RevocationReason> terminalCleanup;
+    private final BiConsumer<RevocationReason, RevocationTrigger> terminalCleanup;
     private Lease active;
     private long epoch;
 
     public DirectorLeaseManager(Clock clock, Duration ttl, Duration idleCeiling,
                                 SecureRandom random, Consumer<RevocationReason> terminalCleanup) {
+        this(clock, ttl, idleCeiling, random, (reason, trigger) -> terminalCleanup.accept(reason));
+    }
+
+    public static DirectorLeaseManager withTriggerLogging(Clock clock, Duration ttl, Duration idleCeiling,
+                                SecureRandom random, BiConsumer<RevocationReason, RevocationTrigger> terminalCleanup) {
+        return new DirectorLeaseManager(clock, ttl, idleCeiling, random, terminalCleanup);
+    }
+
+    private DirectorLeaseManager(Clock clock, Duration ttl, Duration idleCeiling,
+                                SecureRandom random, BiConsumer<RevocationReason, RevocationTrigger> terminalCleanup) {
         this.clock = Objects.requireNonNull(clock);
         this.ttl = Objects.requireNonNull(ttl);
         this.idleCeiling = Objects.requireNonNull(idleCeiling);
@@ -78,8 +89,13 @@ public final class DirectorLeaseManager {
         if (active != null && active.connectionId().equals(connectionId)) revoke(RevocationReason.DISCONNECTED);
     }
 
-    public synchronized void humanOverride() { if (active != null) revoke(RevocationReason.HUMAN_OVERRIDE); }
-    public synchronized void emergencyStop() { if (active != null) revoke(RevocationReason.EMERGENCY_STOP); else terminalCleanup.accept(RevocationReason.EMERGENCY_STOP); }
+    public synchronized void humanOverride() { humanOverride(null); }
+    public synchronized void humanOverride(RevocationTrigger trigger) { if (active != null) revoke(RevocationReason.HUMAN_OVERRIDE, trigger); }
+    public synchronized void emergencyStop() { emergencyStop(null); }
+    public synchronized void emergencyStop(RevocationTrigger trigger) {
+        if (active != null) revoke(RevocationReason.EMERGENCY_STOP, trigger);
+        else terminalCleanup.accept(RevocationReason.EMERGENCY_STOP, trigger);
+    }
     public synchronized Optional<Lease> status() { expireIfNeeded(); return Optional.ofNullable(active); }
     public synchronized long epoch() { return epoch; }
 
@@ -88,9 +104,13 @@ public final class DirectorLeaseManager {
     }
 
     private void revoke(RevocationReason reason) {
+        revoke(reason, null);
+    }
+
+    private void revoke(RevocationReason reason, RevocationTrigger trigger) {
         active = null;
         epoch++;
-        terminalCleanup.accept(reason);
+        terminalCleanup.accept(reason, trigger);
     }
 
     private static String sanitizeOwner(String owner) {

@@ -10,18 +10,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(MouseHandler.class)
 abstract class MouseHandlerMixin {
-    @Inject(method = "onButton", at = @At("HEAD"))
+    @Inject(method = "onButton", at = @At("HEAD"), cancellable = true)
     private void replayMcp$physicalButton(long window, MouseButtonInfo button, int action, CallbackInfo ci) {
-        ReplayMCPClient.physicalInput();
+        if (ReplayMCPClient.suppressConflictingMouse()) ci.cancel();
     }
 
-    @Inject(method = "onScroll", at = @At("HEAD"))
+    @Inject(method = "onScroll", at = @At("HEAD"), cancellable = true)
     private void replayMcp$physicalScroll(long window, double horizontal, double vertical, CallbackInfo ci) {
-        ReplayMCPClient.physicalInput();
+        if (ReplayMCPClient.suppressConflictingMouse()) ci.cancel();
     }
 
-    @Inject(method = "onMove", at = @At("HEAD"))
+    @Inject(method = "onMove", at = @At("HEAD"), cancellable = true)
     private void replayMcp$physicalMove(long window, double x, double y, CallbackInfo ci) {
-        ReplayMCPClient.physicalInput();
+        if (ReplayMCPClient.suppressConflictingMouse()) ci.cancel();
     }
 }

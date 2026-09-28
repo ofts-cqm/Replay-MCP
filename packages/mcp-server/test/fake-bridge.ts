@@ -88,7 +88,7 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
         case "lease.release": leaseOwner = undefined; leaseId = ""; fence++; success({ released: true }); break;
         case "observation.framebuffer": success({ ...artifact(pngPath, png, "image/png"), view: params.view ?? "player", capture_tick: 80, snapshot: { synchronized: true, tick: 80, player: { x: 1, y: 64, z: 2 } } }); break;
         case "observation.motion_burst": success({ requested_frames: params.frames ?? 2, dropped_frames: 0, view: params.view ?? "clean", frames: [artifact(pngPath, png, "image/png")] }); break;
-        case "observation.query": success({ kind: params.kind, tick: 80, player: { x: 1, y: 64, z: 2 } }); break;
+        case "observation.query": success({ kind: params.kind, tick: 80, player: { x: 1, y: 64, z: 2 }, nearby_entities: [{uuid:"11111111-1111-4111-8111-111111111111",type:"minecraft:player",name:"fixture",distance:4}] }); break;
         case "observation.spatial_map": {
           const bounds = params.bounds as Record<string, number>;
           const cellSize = Number(params.cell_size);
@@ -152,7 +152,7 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
         case "replay.close": success({ success: true }); break;
         case "replay.save": success({ success: true, path: "take-edit-1.mcpr" }); break;
         case "replay.playback": success({ success: true, time_us: params.time_us ?? 0, speed: params.speed ?? 0 }); break;
-        case "replay.preview_sample": success({ ...artifact(pngPath, png, "image/png"), view: "clean", output_time_us: params.output_time_us, replay_time_us: Number(params.output_time_us) + 1_000_000, validation: { valid: true, chunks_ready: true, camera_inside_block: false, warnings: [], errors: [] } }); break;
+        case "replay.preview_sample": success({ ...(params.diagnostics_only ? {} : {...artifact(pngPath, png, "image/png"), image_source:"replaymod-native-still/1"}), view: "clean", output_time_us: params.output_time_us, replay_time_us: Number(params.output_time_us) + 1_000_000, validation: { valid: true, chunks_ready: true, camera_inside_block: false, warnings: [], errors: [] } }); break;
         case "timeline.get": success({ revision, tracks: { replay_time: [{ time_us: 0, replay_time_us: 1_000_000 }, { time_us: 5_000_000, replay_time_us: 6_000_000 }], camera_position: [{ time_us: 0 }, { time_us: 5_000_000 }] }, native_tracks: ["replay_time", "camera_position"], sidecar_tracks: ["shots", "excluded_ranges", "fov", "look_at"] }); break;
         case "timeline.apply": revision = String(Number(revision) + 1); success({ revision, tracks: {}, warnings: [], undo_token: crypto.randomUUID() }); break;
         case "render.presets": success([{ id: "preview_720p", width: 1280, height: 720, fps: 30 }]); break;
