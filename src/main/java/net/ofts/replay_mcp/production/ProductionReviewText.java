@@ -142,11 +142,80 @@ public final class ProductionReviewText {
         if (report.has("total_frames")) out.add("Video length: " + duration(number(report, "total_frames", 0), number(draft, "fps", 0)) + ".");
         if (report.has("findings")) for (JsonElement item : report.getAsJsonArray("findings")) {
             JsonObject finding = item.getAsJsonObject();
-            String prefix = "advisory".equals(text(finding, "kind", "")) ? "Suggestion: " : "Needs attention: ";
-            String location = finding.has("clip") ? "Clip " + (finding.get("clip").getAsInt() + 1) + " — " : "";
-            out.add(prefix + location + findingText(finding));
+            out.add(findingDetails(finding, report, current ? draft : new JsonObject()));
         }
         out.add("Accept exceptions allows this specific export despite these issues. It does not turn failed checks into passed checks.");
+    }
+
+    private static String findingDetails(JsonObject finding, JsonObject report, JsonObject contract) {
+        String rule = text(finding, "rule", "");
+        String prefix = switch (text(finding, "kind", "")) {
+            case "failure" -> "Rule violated: ";
+            case "missing" -> "Missing evidence: ";
+            case "advisory" -> "Suggestion: ";
+            default -> "Needs attention: ";
+        };
+        String location = finding.has("clip") ? "Clip " + (finding.get("clip").getAsInt() + 1) + " — " : "";
+        List<String> lines = new ArrayList<>();
+        lines.add(prefix + location + findingLabel(rule) + (rule.isBlank() ? "" : " [" + rule + "]"));
+        lines.add(findingText(finding));
+        if (!contract.isEmpty()) {
+            String requirement = switch (rule) {
+                case "runtime.bounds" -> "Video length";
+                case "shot.bounds" -> "Shot limits";
+                case "shot.pacing" -> "Shot pacing";
+                case "shot.count" -> "Number of shots";
+                case "footage.reuse" -> "Repeated footage";
+                case "collision.required" -> "Camera clearance";
+                case "render.format" -> "Picture";
+                default -> "";
+            };
+            if (!requirement.isEmpty()) lines.add("Requirement: " + summary(contract).get(requirement));
+            double fps = number(contract, "fps", 0);
+            if (rule.equals("runtime.bounds") && report.has("total_frames"))
+                lines.add("Actual video length: " + duration(number(report, "total_frames", 0), fps) + ".");
+            if (rule.equals("footage.reuse") && report.has("reused_frames"))
+                lines.add("Actual repeated footage: " + duration(number(report, "reused_frames", 0), fps) + ".");
+            if (rule.equals("shot.count") && report.has("editorial_shots"))
+                lines.add("Actual shot count: " + text(report, "editorial_shots", "") + ".");
+        }
+        if (finding.has("range") && finding.get("range").isJsonArray()) {
+            var range = finding.getAsJsonArray("range");
+            if (range.size() == 2 && range.get(0).isJsonPrimitive() && range.get(0).getAsJsonPrimitive().isNumber()
+                    && range.get(1).isJsonPrimitive() && range.get(1).getAsJsonPrimitive().isNumber()) {
+                double start = range.get(0).getAsDouble(), end = range.get(1).getAsDouble();
+                double fps = number(contract, "fps", 0);
+                if (fps > 0) {
+                    lines.add("Output range: " + duration(start, fps) + " to " + duration(end, fps) + ".");
+                    if (rule.equals("shot.bounds")) lines.add("Shot duration: " + duration(end - start, fps) + ".");
+                } else lines.add("Output frames: " + range.get(0) + " to " + range.get(1) + ".");
+            }
+        }
+        String detail = text(finding, "message", "");
+        if (!detail.isBlank()) lines.add("Details: " + detail);
+        return String.join("\n", lines);
+    }
+
+    private static String findingLabel(String rule) {
+        return switch (rule) {
+            case "contract.locked" -> "Plan approval";
+            case "runtime.bounds" -> "Video length";
+            case "shot.bounds" -> "Shot duration";
+            case "shot.pacing" -> "Shot pacing";
+            case "shot.count" -> "Number of shots";
+            case "footage.reuse" -> "Repeated footage";
+            case "collision.required" -> "Camera clearance";
+            case "render.receipt" -> "Source video verification";
+            case "render.artifact" -> "Source video artifact";
+            case "render.format" -> "Source picture format";
+            case "edit.range" -> "Source trim range";
+            case "assembly.receipt" -> "Final video verification";
+            case "assembly.artifact" -> "Final video artifact";
+            case "assembly.stale" -> "Export matches approved plan and edit";
+            case "assembly.metadata" -> "Final video length and format";
+            case "requirement.unsupported" -> "Additional requirement";
+            default -> rule.isBlank() ? "Unidentified check" : "Check result";
+        };
     }
 
     private static String findingText(JsonObject f) {
@@ -159,13 +228,16 @@ public final class ProductionReviewText {
             case "footage.reuse" -> "The video repeats more footage than allowed.";
             case "collision.required" -> "The required camera clearance check is missing or unfinished.";
             case "render.receipt" -> "A completed, verified source clip is missing.";
+            case "render.artifact" -> "A source video is missing, changed, or could not be verified.";
             case "render.format" -> "A source clip has the wrong picture size or frame rate.";
             case "edit.range" -> "An edit uses footage beyond the end of a source clip.";
             case "assembly.receipt" -> "A verified final export is missing.";
+            case "assembly.artifact" -> "The final video is missing, changed, or could not be verified.";
             case "assembly.stale" -> "The export was made from an earlier plan or edit. Export it again.";
             case "assembly.metadata" -> "The exported video does not match the planned length or picture settings.";
-            case "requirement.unsupported" -> "An additional requirement cannot yet be checked automatically. See the Plan page.";
-            default -> "A check could not be completed. Ask the assistant for the details.";
+            case "requirement.unsupported" -> "This additional requirement cannot yet be checked automatically.";
+            default -> text(f, "rule", "").isBlank()
+                    ? "The report did not identify this check." : "See the recorded check details below.";
         };
     }
 

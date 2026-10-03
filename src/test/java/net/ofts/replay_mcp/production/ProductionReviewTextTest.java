@@ -14,6 +14,88 @@ class ProductionReviewTextTest {
               "require_collision":false,"mechanical_requirements":[],"subjective_criteria":[]}}
             """).getAsJsonObject();
     }
+    private JsonObject exportState(String findings) {
+        var state = state();
+        state.add("locked_contract", state.get("draft").deepCopy());
+        state.addProperty("locked_hash", "hidden-draft-id");
+        var report = new JsonObject();
+        report.addProperty("contract_hash", "hidden-draft-id");
+        report.addProperty("status", "FAIL");
+        report.add("findings", JsonParser.parseString(findings));
+        state.add("report", report);
+        return state;
+    }
+    @Test void exportNamesViolatedRuleAndShowsLimitsClipRangeAndDiagnostic() {
+        var state = exportState("""
+            [{"rule":"shot.bounds","kind":"failure","clip":1,"range":[90,105],
+              "message":"15 frames outside hard shot bounds."}]
+            """);
+        var contract = state.getAsJsonObject("locked_contract");
+        contract.addProperty("min_shot_frames", 90); contract.addProperty("max_shot_frames", 300);
+        // A pending revision must not replace the limits for the checked export.
+        state.getAsJsonObject("draft").addProperty("min_shot_frames", 150);
+        String checks = String.join("\n", ProductionReviewText.exportParagraphs(state));
+        assertTrue(checks.contains("Rule violated: Clip 2 — Shot duration [shot.bounds]"));
+        assertTrue(checks.contains("Every shot must last 3 seconds to 10 seconds"));
+        assertTrue(checks.contains("Output range: 3 seconds to 3.5 seconds"));
+        assertTrue(checks.contains("Shot duration: 0.5 seconds"));
+        assertTrue(checks.contains("15 frames outside hard shot bounds"));
+        assertFalse(checks.contains("Every shot must last 5 seconds"));
+    }
+    @Test void unsupportedRequirementsAndArtifactChecksKeepTheirSpecificDetails() {
+        var state = exportState("""
+            [{"rule":"requirement.unsupported","kind":"missing",
+              "message":"No mechanical evidence adapter for: Include both day and night views"},
+             {"rule":"requirement.unsupported","kind":"missing",
+              "message":"No mechanical evidence adapter for: Show the chandelier interior"},
+             {"rule":"render.artifact","kind":"missing","message":"render artifact hash changed"},
+             {"rule":"assembly.artifact","kind":"missing","message":"Final artifact is missing or changed."}]
+            """);
+        String checks = String.join("\n", ProductionReviewText.exportParagraphs(state));
+        assertTrue(checks.contains("Missing evidence: Additional requirement [requirement.unsupported]"));
+        assertTrue(checks.contains("Include both day and night views"));
+        assertTrue(checks.contains("Show the chandelier interior"));
+        assertTrue(checks.contains("Source video artifact [render.artifact]"));
+        assertTrue(checks.contains("render artifact hash changed"));
+        assertTrue(checks.contains("Final video artifact [assembly.artifact]"));
+        assertFalse(checks.contains("Rule violated:"));
+    }
+    @Test void runtimeReuseAndCountShowObservedValuesAndReviewedLimits() {
+        var state = exportState("""
+            [{"rule":"runtime.bounds","kind":"failure","message":"2400 frames outside 1440–2160."},
+             {"rule":"footage.reuse","kind":"failure","message":"60 repeated source frames exceeds budget 30."},
+             {"rule":"shot.count","kind":"failure","message":"5 editorial shots outside explicit count bounds."},
+             {"rule":"shot.pacing","kind":"advisory","clip":0,"message":"30 frames outside preferred pacing band."}]
+            """);
+        var report = state.getAsJsonObject("report");
+        report.addProperty("total_frames", 2400); report.addProperty("reused_frames", 60); report.addProperty("editorial_shots", 5);
+        var contract = state.getAsJsonObject("locked_contract");
+        contract.addProperty("reuse_budget_frames", 30); contract.addProperty("max_shots", 4);
+        String checks = String.join("\n", ProductionReviewText.exportParagraphs(state));
+        assertTrue(checks.contains("Allowed: 48 seconds to 72 seconds"));
+        assertTrue(checks.contains("Actual video length: 80 seconds"));
+        assertTrue(checks.contains("Up to 1 second allowed"));
+        assertTrue(checks.contains("Actual repeated footage: 2 seconds"));
+        assertTrue(checks.contains("At most 4 shots"));
+        assertTrue(checks.contains("Actual shot count: 5"));
+        assertTrue(checks.contains("Suggestion: Clip 1 — Shot pacing [shot.pacing]"));
+    }
+    @Test void unknownAndLegacyFindingsRemainReadableWithoutInventingDetails() {
+        var state = exportState("""
+            [{"rule":"future.rule","kind":"failure","message":"The north entrance was not visible."},
+             {"rule":"shot.bounds","kind":"failure"}, {}]
+            """);
+        String checks = String.join("\n", ProductionReviewText.exportParagraphs(state));
+        assertTrue(checks.contains("Check result [future.rule]"));
+        assertTrue(checks.contains("The north entrance was not visible"));
+        assertTrue(checks.contains("Shot duration [shot.bounds]"));
+        assertTrue(checks.contains("Unidentified check"));
+        assertFalse(checks.contains("null"));
+        state.addProperty("locked_hash", "new-contract");
+        String stale = String.join("\n", ProductionReviewText.exportParagraphs(state));
+        assertTrue(stale.contains("older plan"));
+        assertFalse(stale.contains("Requirement:"));
+    }
     @Test void summaryExplainsSecondsAndAuthorityWithoutDumpingInternalState() {
         JsonObject state=state();
         String plan=String.join("\n",ProductionReviewText.paragraphs(state,ProductionReviewText.Page.PLAN));
