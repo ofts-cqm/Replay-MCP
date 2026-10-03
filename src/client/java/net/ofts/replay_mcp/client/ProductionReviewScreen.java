@@ -12,11 +12,16 @@ final class ProductionReviewScreen extends PlayerReviewScreen {
     private EditBox comment;
     private String submissionId = java.util.UUID.randomUUID().toString();
     ProductionReviewScreen(ReplayMcpServiceGraph services) { this(services, ""); }
-    ProductionReviewScreen(ReplayMcpServiceGraph services, String project) { super(services,"Review video plan",project, new net.ofts.replay_mcp.production.ContractReviewSession(services.production().all())); }
+    ProductionReviewScreen(ReplayMcpServiceGraph services, String project) { super(services,"Review video plan",project, new net.ofts.replay_mcp.production.ContractReviewSession(services.production().all(), project)); }
     private String draftHash() { return snapshot.has("draft_hash") ? snapshot.get("draft_hash").getAsString() : ""; }
     boolean displays(String project, String hash) { return contractSession.contains(project, hash); }
+    private String approvalLabel() { return contractSession.projectIds().size() > 1
+            ? "Approve all videos (" + contractSession.projectIds().size() + ")" : "Approve plan"; }
     @Override protected List<String> paragraphs() { var result = new java.util.ArrayList<String>();
-        result.add("Approve all videos approves every plan listed in this window (" + contractSession.projectIds().size()
+        if (contractSession.projectIds().isEmpty()) return List.of("No video plans are waiting for approval.");
+        result.add(contractSession.projectIds().size() == 1
+                ? "Approve plan approves this video's requirements. Comments apply to this video."
+                : "Approve all videos approves every pending plan listed in this window (" + contractSession.projectIds().size()
                 + " videos). Use Next video to review each. Comments apply only to the video you are viewing.");
         result.addAll(ProductionReviewText.paragraphs(snapshot, section)); return result; }
     @Override protected String subtitle() { return ProductionReviewText.status(snapshot); }
@@ -28,7 +33,7 @@ final class ProductionReviewScreen extends PlayerReviewScreen {
     @Override protected void primaryAction() { submit(false); }
     private void submit(boolean approve) {
         String text = comment == null ? "" : comment.getValue().trim();
-        if (!approve && text.isBlank()) { message = "Write a comment, or choose Approve all videos. Esc discards unsent input."; return; }
+        if (!approve && text.isBlank()) { message = "Write a comment, or choose " + approvalLabel() + ". Esc discards unsent input."; return; }
         // Both comment and approval are persisted atomically, only from physical UI input.
         boolean[] saved = {false};
         act(() -> { if (approve) services.production().physicalApproveAll(contractSession.hashes(), projectId, submissionId, text);
@@ -44,12 +49,14 @@ final class ProductionReviewScreen extends PlayerReviewScreen {
             tab.active = section != choice; addRenderableWidget(tab);
         }
         int y=controlsTop();
-        comment = new EditBox(font,15,y+25,width-30,20,Component.literal("Comment for this video (sent with Submit or Approve all videos)"));
+        comment = new EditBox(font,15,y+25,width-30,20,Component.literal("Comment for this video (sent with Submit or " + approvalLabel() + ")"));
         comment.setMaxLength(2000); comment.setHint(Component.literal("Comment... Submit sends; Esc discards.")); comment.setValue(text); addRenderableWidget(comment);
-        Button approve = Button.builder(Component.literal("Approve all videos (" + contractSession.projectIds().size() + ")"),
+        Button approve = Button.builder(Component.literal(approvalLabel()),
                 b -> submit(true)).bounds(15,y+51,width-30,20)
                 .tooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(
-                        "Approves ALL videos listed in this window and closes it. Already-approved plans stay unchanged. Any comment applies only to the current video."))).build();
+                        contractSession.projectIds().size() > 1
+                        ? "Approves all pending plans listed in this window and closes it. Any comment applies only to the current video."
+                        : "Approves this video's plan and closes it. Any comment applies to this video."))).build();
         approve.active = contractSession.canApprove();addRenderableWidget(approve);
 
     }

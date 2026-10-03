@@ -88,9 +88,10 @@ project validation, handoff export, and one `control_release` in final cleanup.
 On human override or lease loss, stop instead of repeatedly reacquiring.
 
 Contract review waits in `production_contract_draft` by default. **Submit** commits
-comments for the current video and closes; **Approve all videos (N)** commits
-approval for every plan listed in the window and closes. Any typed comment
-applies only to the current video. Already-approved plans remain unchanged.
+comments for the current video and closes; **Approve plan** approves only the
+requested project's current contract and closes. Other projects are excluded
+from automatic review. Manual review lists pending plans only and can approve
+those together. Approved contracts and their history remain saved.
 Continue a timed-out wait via `production_status` with the returned
 revision/sequence cursor, following the shared operations reference. Keep the
 turn active while waiting; do not ask the player to send an extra chat message.

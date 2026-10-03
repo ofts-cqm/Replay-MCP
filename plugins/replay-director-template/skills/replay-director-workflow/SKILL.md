@@ -21,7 +21,7 @@ finalization, jobs, and the public tool groups.
 2. Create or open one project and translate the request into ordered scenes,
    shots, and a single intended deliverable.
    Draft the production contract using the automatic review-window flow in
-   Replay MCP operations. Explain the physical Submit/Approve all videos actions before
+   Replay MCP operations. Explain the physical Submit/Approve plan actions before
    calling the tool, then wait for submission. A saved draft is not approval;
    inspect the returned review state. Only the player may lock the contract.
 3. Create the temporary request record required by Replay MCP operations. Store
@@ -142,9 +142,10 @@ finished. If human override, disconnect, stale fencing, or genuine lease loss
 occurs, stop mutations and report it; do not loop on reacquisition.
 
 Contract review waits in `production_contract_draft` by default. **Submit** commits
-comments for the current video and closes; **Approve all videos (N)** commits
-approval for every plan listed in the window and closes. Any typed comment
-applies only to the current video. Already-approved plans remain unchanged.
+comments for the current video and closes; **Approve plan** approves only the
+requested project's current contract and closes. Other projects are excluded
+from automatic review. Manual review lists pending plans only and can approve
+those together. Approved contracts and their history remain saved.
 Continue a timed-out wait via `production_status` with the returned
 revision/sequence cursor, following the shared operations reference. Keep the
 turn active while waiting; do not ask the player to send an extra chat message.

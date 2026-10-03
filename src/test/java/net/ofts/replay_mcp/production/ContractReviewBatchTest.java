@@ -11,6 +11,49 @@ class ContractReviewBatchTest {
     private JsonObject contract() {
         var result = new JsonObject(); result.addProperty("original_request", "film"); return result;
     }
+    @Test void secondVideoReviewExcludesApprovedFirstVideoAndOtherPendingPlans() throws Exception {
+        var store = new ProductionReviewStore(root.resolve("second-video.json"));
+        String first = store.draft("first", contract(), "").get("draft_hash").getAsString();
+        store.physicalSubmit("first", first, "approve-first", "", true);
+        var approvedFirst = store.get("first");
+        String second = store.draft("second", contract(), "").get("draft_hash").getAsString();
+        store.draft("unrelated", contract(), "");
+        var session = new ContractReviewSession(store.all(), "second");
+        assertEquals(java.util.List.of("second"), session.projectIds());
+        assertEquals(java.util.Map.of("second", second), session.hashes());
+        assertFalse(session.contains("first", first));
+        assertTrue(session.canApprove());
+        store.physicalApproveAll(session.hashes(), "second", "approve-second", "");
+        assertEquals(approvedFirst, store.get("first"));
+        assertTrue(ProductionReviewText.approved(store.get("second")));
+        assertFalse(store.get("unrelated").has("locked_hash"));
+    }
+    @Test void manualReviewShowsOnlyPendingRevisionsAndPreservesHistory() throws Exception {
+        Path file = root.resolve("pending.json");
+        var store = new ProductionReviewStore(file);
+        String first = store.draft("first", contract(), "").get("draft_hash").getAsString();
+        store.physicalSubmit("first", first, "approve-first", "", true);
+        var approvedFirst = store.get("first");
+        store.draft("second", contract(), "");
+        assertEquals(java.util.List.of("second"), new ContractReviewSession(new ProductionReviewStore(file).all()).projectIds());
+        assertEquals(approvedFirst, store.get("first"));
+        var revised = contract(); revised.addProperty("target_frames", 360);
+        String revision = store.draft("first", revised, first).get("draft_hash").getAsString();
+        var session = new ContractReviewSession(store.all());
+        assertEquals(java.util.List.of("first", "second"), session.projectIds());
+        assertTrue(session.contains("first", revision));
+        assertEquals(first, session.snapshot("first").get("locked_hash").getAsString());
+    }
+    @Test void manualReviewWithOnlyApprovedPlansIsEmptyButExplicitInspectionIsAllowed() throws Exception {
+        var store = new ProductionReviewStore(root.resolve("approved-only.json"));
+        String hash = store.draft("first", contract(), "").get("draft_hash").getAsString();
+        store.physicalSubmit("first", hash, "approve-first", "", true);
+        var session = new ContractReviewSession(store.all());
+        assertTrue(session.projectIds().isEmpty()); assertFalse(session.canApprove());
+        var explicit = new ContractReviewSession(store.all(), "first");
+        assertTrue(explicit.contains("first", hash)); assertFalse(explicit.canApprove());
+        assertTrue(new ContractReviewSession(store.all(), "missing").projectIds().isEmpty());
+    }
     @Test void browsingKeepsOriginalRequestVisibleAndFreezesBatch() throws Exception {
         var store = new ProductionReviewStore(root.resolve("reviews.json"));
         String a = store.draft("a", contract(), "").get("draft_hash").getAsString();

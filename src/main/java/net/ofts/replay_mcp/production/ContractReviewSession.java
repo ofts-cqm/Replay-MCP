@@ -10,9 +10,15 @@ public final class ContractReviewSession {
     private final JsonObject snapshots = new JsonObject();
     private final Map<String, String> hashes = new TreeMap<>();
     public ContractReviewSession(JsonObject projects) {
+        this(projects, "");
+    }
+    /** Automatic review is scoped to its requested project; manual review lists pending plans. */
+    public ContractReviewSession(JsonObject projects, String project) {
         for (var entry : projects.entrySet()) {
+            if (!project.isEmpty() && !project.equals(entry.getKey())) continue;
             var state = entry.getValue().getAsJsonObject();
             if (!state.has("draft") || !state.has("draft_hash")) continue;
+            if (project.isEmpty() && ProductionReviewText.approved(state)) continue;
             snapshots.add(entry.getKey(), state.deepCopy());
             hashes.put(entry.getKey(), state.get("draft_hash").getAsString());
         }

@@ -34,17 +34,20 @@ For “every shot strictly 3–10 seconds,” set the **hard** bounds to `3*fps`
 For a 60-second, 60-FPS film, `target_frames` is 3600. Omit shot-count fields unless
 requested. Do not manufacture a long hold or duplicate shots to fill runtime.
 
-**Approve all videos (N)** approves every drafted video listed in the window,
-not just the visible page. The batch can include other projects already in the
-review store. Use **Next video** to inspect it; the tooltip and explanatory text
-state the scope. The list and exact revisions are captured at opening: new drafts
-do not silently join, and a changed revision or save failure rejects the whole
-approval. Existing approvals remain unchanged unless a new comment is submitted.
+Automatic review shows only the requested project's current contract.
+**Approve plan** approves that revision and closes the window. Other saved
+projects never join this automatic review, including previously approved videos.
+The manual fallback lists only plans awaiting approval, including revised plans
+whose current draft differs from their approved revision. If multiple pending
+plans are listed, **Next video** browses them and **Approve all videos (N)**
+approves that displayed batch. The list and exact revisions are captured at
+opening: new drafts do not silently join, and a changed revision or save failure
+rejects the whole approval. Approved contracts and their history remain saved.
 Export exceptions are never granted by this button.
 
-A typed comment is temporary until **Submit** or **Approve all videos (N)**.
+A typed comment is temporary until **Submit** or the approval button.
 Submit saves the current video's comment and closes without approval. Approve
-saves its comment plus batch approval and closes. Escape discards unsent input.
+saves its comment plus approval of the displayed plan(s) and closes. Escape discards unsent input.
 On a submitted comment, read it and revise the plan if needed; the agent presents
 the revised contract through the same tool. Do not ask for another manual open.
 

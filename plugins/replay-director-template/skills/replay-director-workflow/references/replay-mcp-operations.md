@@ -305,12 +305,14 @@ physical player actions; never simulate their clicks or keys.
 
 The automatic contract popup is **Review video plan**. It shows plain-language
 Plan, Changes, Your request, and Comments pages. **Submit** saves the typed
-comment for the current video and closes without approval. **Approve all videos (N)**
-atomically approves all drafted videos listed in that window, saves the current
-video's typed comment, then closes. The tooltip explains this scope. The list and
-revisions are fixed when the window opens; a changed revision rejects the whole
-batch. Already-approved plans without new comments remain untouched. **Next video**
-browses this same batch and must not report the other plans as dismissed. Typing alone is temporary; Escape discards
+comment for the current video and closes without approval. Automatic review shows
+only the requested project's current contract. **Approve plan** approves that
+displayed revision, saves its typed comment, then closes. Other projects are
+excluded. Manual review lists only pending plans; when multiple plans are listed,
+**Approve all videos (N)** atomically approves that displayed batch and **Next video**
+browses it without dismissing other members. The list and revisions are fixed
+when the window opens; a changed revision rejects the whole approval. Approved
+contracts and their history remain saved. Typing alone is temporary; Escape discards
 unsent input. Neither submission nor approval is inferred from window closure. It contains no export-override action. Export results and
 player exceptions belong to the separate **Review export results** screen,
 automatically opened by `production_check` for a failed/incomplete assembled
@@ -339,7 +341,7 @@ its immutable working copy before claiming replay editing or rendering has begun
 
 The draft tool waits for physical submission by default (`wait_timeout_ms: 50000`;
 use `0` only when an immediate return is needed for diagnostics). Tell the player
-before the call that Submit sends comments and Approve all videos saves approval and
+before the call that Submit sends comments and Approve plan saves approval and
 closes. Keep the agent turn active while awaiting review; do not finish with
 “message me when done.” No extra chat message is needed while the tool is waiting.
 
