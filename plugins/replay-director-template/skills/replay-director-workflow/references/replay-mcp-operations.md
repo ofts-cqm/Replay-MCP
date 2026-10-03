@@ -370,13 +370,27 @@ and review typing must not revoke control; if they do, report the defect rather
 than repeatedly reacquiring.
 
 Default runtime tolerance is ±20%, preferred shots 3–10 seconds, hard shots 1–15
-seconds, no shot-count limit, and no footage reuse. Incorporate explicit player
+seconds, no shot-count limit, and no footage reuse. Encourage varied short and
+long shots within those bounds: a few 3–4-second shots followed by a few
+8–10-second shots is one useful pattern, not a mandatory cadence. Choose lengths
+for the content; there is no universally preferred length such as seven seconds.
+The preferred band is advisory, not a replacement for the absolute bounds.
+Incorporate explicit player
 requirements in the reviewed contract. Unimplemented measurable requirements go
 in `mechanical_requirements` and remain INCOMPLETE; subjective composition belongs
 in `subjective_criteria` and is outside the mechanical guarantee.
 
 Use `replay_camera_preset` for shared static/slide/rise/push/pan/orbit/follow
-baking, or keep `replay_timeline_apply` for manual paths. Presets replace camera
+baking, or keep `replay_timeline_apply` for manual paths. Reserve `static` for
+dynamic subjects such as player/entity activity or operating redstone machines.
+Do not use it or a motionless manual path for a plain static or paused
+scene/building; move the camera even when replay time is frozen. For architectural
+and scene coverage, apply [building cinematography](../../minecraft-building-cinematography/SKILL.md):
+verify that long-distance overviews are centered in actual rendered frames, and
+vary high-altitude overviews with close, low-altitude details. Use `orbit` to
+reveal magnitude/form and `rise` to reveal height. Review pacing and composition
+visually; a mechanical PASS alone does not establish these style goals.
+Presets replace camera
 and replay-time tracks against an expected revision. Duration and replay-time mode
 are explicit. Interior defaults resolve one native support surface +1.6 blocks;
 `interior_height_mode: explicit` retains the supplied height. This is not a stair

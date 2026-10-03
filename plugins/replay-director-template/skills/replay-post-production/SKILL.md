@@ -59,6 +59,12 @@ Before importing, require:
 2. Import each media artifact once and preserve stable IDs and source paths.
 3. Trim and order scenes to the creative brief. Use ordinary cuts or editor
    transitions between separately rendered player/building shots by default.
+   Preserve varied short/long pacing: recommended shots are 3–10 seconds within
+   absolute 1–15-second bounds unless the user sets different limits. A few
+   3–4-second shots followed by a few 8–10-second shots is one useful example;
+   do not normalize all clips to seven seconds or another single length. For
+   scenes/exteriors, preserve variety between high-altitude overviews and close,
+   low-altitude details; verify overviews remain centered in the retained frames.
 4. Keep direct in-Replay camera transitions only when they were intentionally
    authored as 0.5–1 second moves; do not add a duplicate editor transition on
    top without a creative reason.

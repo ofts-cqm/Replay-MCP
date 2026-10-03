@@ -33,6 +33,12 @@ For “every shot strictly 3–10 seconds,” set the **hard** bounds to `3*fps`
 `10*fps`; the default preferred band alone does not enforce that instruction.
 For a 60-second, 60-FPS film, `target_frames` is 3600. Omit shot-count fields unless
 requested. Do not manufacture a long hold or duplicate shots to fill runtime.
+The preferred 3–10-second band encourages varied short/long pacing within the
+absolute 1–15-second bounds, not one standard shot length. For example, mix a few
+3–4-second shots with a few 8–10-second shots; seven seconds is not universally
+preferred and the example does not mandate a fixed cadence. Retain pacing and
+composition goals in `subjective_criteria` for visual review; duration bounds
+alone do not prove varied pacing or centered framing.
 
 Automatic review shows only the requested project's current contract.
 **Approve plan** approves that revision and closes the window. Other saved
@@ -101,13 +107,21 @@ for advance_1x. Do not silently retime a player's action.
 
 | Preset | Inputs and behavior |
 | --- | --- |
-| `static` | `start`, `yaw`/`pitch` or `aim`; constant camera position |
+| `static` | `start`, `yaw`/`pitch` or `aim`; constant camera position for dynamic-subject coverage, not plain static/paused scenes or buildings |
 | `slide` | `start`, `direction` with y=0 (default +X), signed `distance`; horizontal translation |
 | `rise` | `start`, signed `distance`; negative falls |
 | `push` | `start`, signed `distance`; direction defaults to yaw/pitch, negative pulls back |
 | `pan` | `start`, starting yaw/pitch, `sweep_degrees`, `tilt_degrees`; fixed position, rotating view; fixed aim conflicts |
 | `orbit` | `center`, optional radius/height/start_angle_degrees/sweep_degrees/aim; aims at center by default; yaw/direction conflict |
 | `follow` | `player_uuid`, source start/duration, advance_1x, seed, horizontal distances, elevation and actual follow_fps |
+
+Choose `static` for dynamic activity such as players, entities, or operating
+redstone machines. For plain static or paused scenes/buildings, use moving
+presets or a deliberate moving manual path. Long-distance overviews must keep
+the whole target visibly centered; inspect actual frames rather than relying on
+`aim` or `center` coordinates. Vary high-altitude overviews with close,
+low-altitude details, using `orbit` for magnitude/form and `rise` for height as
+described in [building cinematography](../../minecraft-building-cinematography/SKILL.md).
 
 `profile: exterior` is the default; `interior` shares the same generators with
 conservative defaults. Slide/push distance is 8 exterior / 2 interior blocks;
