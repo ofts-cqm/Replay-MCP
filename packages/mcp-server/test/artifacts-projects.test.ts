@@ -79,7 +79,7 @@ describe("artifacts and projects", () => {
     await expect(projects.importCapturedTake(project.id, 3, "missing", captured)).rejects.toMatchObject({ code: "invalid_request" });
   });
 
-  it("limits sidecar cancellation to the owning session and recovers interrupted jobs", async () => {
+  it("limits sidecar cancellation to the owning session and preserves another live owner", async () => {
     const root = await mkdtemp(join(tmpdir(), "replay-mcp-jobs-"));
     const artifacts = new ArtifactStore(root); await artifacts.load();
     const first = new JobStore(root, artifacts, new AuditLog(root), "session-1"); await first.load();
@@ -89,7 +89,7 @@ describe("artifacts and projects", () => {
     expect(controller.signal.aborted).toBe(true);
     const running = await first.create("preview", { status: "running" });
     const second = new JobStore(root, artifacts, new AuditLog(root), "session-2"); await second.load();
-    expect(second.get(running.id)).toMatchObject({ status: "failed", failure: { code: "sidecar_restarted" } });
+    expect(second.get(running.id)).toMatchObject({ status: "running" });
     await expect(second.cancelSidecar(job)).rejects.toMatchObject({ code: "job_control_required" });
   });
 });

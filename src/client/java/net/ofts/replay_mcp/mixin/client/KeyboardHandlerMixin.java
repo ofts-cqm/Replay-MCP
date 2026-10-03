@@ -12,6 +12,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 abstract class KeyboardHandlerMixin {
     @Inject(method = "keyPress", at = @At("HEAD"))
     private void replayMcp$physicalKey(long window, int action, KeyEvent event, CallbackInfo ci) {
-        ReplayMCPClient.physicalInput();
+        ReplayMCPClient.physicalKey(action, event);
     }
 }

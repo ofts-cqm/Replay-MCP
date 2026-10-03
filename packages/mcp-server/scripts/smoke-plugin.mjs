@@ -15,7 +15,7 @@ const transport = new StdioClientTransport({
   command: launch.command,
   args: launch.args,
   cwd: resolve(pluginRoot, launch.cwd),
-  env: { ...environment, REPLAY_MCP_DATA_DIR: resolve(dataRoot, "data") },
+  env: { ...environment, REPLAY_MCP_DATA_DIR: resolve(dataRoot, "data"), REPLAY_MCP_GAME_DIR: resolve(dataRoot, "empty-game") },
   stderr: "pipe",
 });
 const client = new Client({ name: "replay-plugin-smoke", version: "1.0.0" }, { versionNegotiation: { mode: "legacy" } });
@@ -25,12 +25,12 @@ transport.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
 try {
   await client.connect(transport);
   const tools = await client.listTools();
-  if (tools.tools.length !== 39) throw new Error(`expected 39 tools, received ${tools.tools.length}`);
+  if (tools.tools.length !== 48) throw new Error(`expected 48 tools, received ${tools.tools.length}`);
   const status = await client.callTool({ name: "system_status", arguments: {} });
   if (status.isError || status.structuredContent?.state !== "offline") {
     throw new Error(`unexpected offline status: ${JSON.stringify(status.structuredContent)}`);
   }
-  process.stdout.write(`Plugin stdio smoke passed: ${pluginRoot} (39 tools, offline status)\n`);
+  process.stdout.write(`Plugin stdio smoke passed: ${pluginRoot} (48 tools, offline status)\n`);
 } catch (error) {
   if (stderr) process.stderr.write(stderr);
   throw error;

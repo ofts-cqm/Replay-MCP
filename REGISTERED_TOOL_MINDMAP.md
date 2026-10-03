@@ -1,0 +1,190 @@
+# Replay MCP registered-tool mindmap
+
+> Generated from the source registry rather than the packaged plugin: the 48
+> public MCP tools are registered in
+> `packages/mcp-server/src/tools/register.ts`.  Nested branches enumerate every
+> source-defined choice for tools that select an operation, representation, or
+> action.  Capability-dependent values such as local render presets are not
+> fixed by this repository and are intentionally not listed as choices.
+
+- **Replay MCP**
+  - **System and control**
+    - `system_status` — sidecar, instance, capability, policy, and job status
+    - `control_status` — read the director lease
+    - `control_acquire` — acquire the director lease
+    - `control_release` — cancel input and release the lease
+  - **Jobs and artifacts**
+    - `job_list` — filter by `queued` / `running` / `completed` / `failed` / `cancelled`
+    - `job_get` — read one job and its log resource
+    - `job_cancel` — cancel a cancellable job
+    - `artifact_list` — filter verified artifacts by project, scene, shot, take, MIME type, or creation time
+  - **Live game observation and queries**
+    - `game_observe` — one screenshot plus synchronized snapshot
+      - `view`: `player` / `clean` / `annotated`
+      - `persist`: `true` / `false`
+    - `game_observe_motion` — bounded motion burst
+      - `view`: `player` / `clean` / `annotated`
+      - `output_mode`: `contact_sheet` / `frames`
+    - `game_query` — structured state without a new image
+      - ordinary `kind`
+        - `player`
+        - `world`
+        - `entities` — optional bounds, distance, type, name, tags, and limit filters
+        - `blocks` — optional bounds, distance, type, name, tags, and limit filters
+        - `inventory`
+        - `screen`
+        - `scoreboard`
+        - `chat_or_system_messages`
+        - `target`
+      - `kind: spatial_map` — loaded-chunk-only regional observation
+        - `representation: surface`
+          - `surface_mode`: `world_surface` / `motion_blocking_no_leaves`
+          - size-2 fallback reasons: `unresolved_surface_boundary` / `adjacent_surfaces`
+        - `representation: volume`
+          - size-2 fallback reasons: `tight_clearance` / `thin_geometry` / `adjacent_volumes`
+        - `cell_size`: `2` (controlled refinement only) / `4` / `8` / `16` / `32`
+        - `material_mix_limit`: `1` / `2` / `3`
+        - `require_complete`: `true` / `false`
+        - size `2` requires a recent containing size-4 `refines_map_id` and a matching fallback reason
+  - **Live game actions**
+    - `game_perform` — ordered, audited action batch (up to 128 actions)
+      - batch behavior
+        - `on_failure`: `stop` / `continue`
+        - `capture`: `none` / `after` / `checkpoints` / `after_and_on_failure`
+      - aim and movement
+        - `look`
+        - `turn`
+        - `look_at_position`
+        - `look_at_entity`
+        - `look_at_block`
+        - `move`
+        - `navigate_to` — native ground navigation; requires `x`, `y`, `z`; optional `tolerance` (0.25–4) and `sprint`
+        - `jump`
+        - `sprint`
+        - `sneak`
+        - `swim`
+        - `stop_all_inputs`
+      - flight (requires locally granted flight automation)
+        - `set_flying`
+        - `fly_move`
+        - `fly_to`
+        - `ascend`
+        - `descend`
+        - `land`
+      - combat and world interaction
+        - `attack`
+        - `use`
+        - `interact_entity`
+        - `break_block`
+        - `place_or_use_item`
+        - `swing_hand`
+        - `pick_block`
+      - inventory and screen interaction
+        - `select_hotbar_slot`
+        - `swap_offhand`
+        - `drop_item`
+        - `open_inventory`
+        - `close_screen`
+        - `click_slot`
+        - `click_widget`
+        - `type_text`
+        - `submit`
+        - `cancel`
+      - player, vehicle, and chat
+        - `respawn`
+        - `mount`
+        - `dismount`
+        - `vehicle_input`
+        - `send_chat`
+        - `execute_command` — subject to the local command policy
+      - sequencing
+        - `wait_ticks`
+        - `wait_until`
+          - condition: `player_present` / `on_ground` / `screen_open` / `screen_closed` / `flying` / `riding` / `in_water`
+        - `checkpoint` — capture point when the batch capture mode includes checkpoints
+  - **Recording**
+    - `recording_status`
+    - `recording_start`
+    - `recording_stop`
+    - `recording_finalize_and_open` — finalize the connection-scoped replay and open its working copy
+    - `recording_add_marker`
+      - `category`: `action` / `cut` / `transition_out` / `transition_in` / `mistake` / `note`
+  - **Replay editing and review**
+    - replay files
+      - `replay_list`
+      - `replay_get`
+      - `replay_open`
+      - `replay_close`
+      - `replay_save`
+    - `replay_playback`
+      - `operation`: `seek` / `play` / `pause` / `speed` / `step` / `spectate` / `detach`
+    - `replay_observe`
+      - `view`: `player` / `clean` / `annotated`
+      - `persist`: `true` / `false`
+    - timeline
+      - `replay_timeline_get`
+      - `replay_timeline_apply` — revision-checked native operations
+        - `upsert_keyframe`
+        - `delete_keyframe`
+        - `move_keyframe`
+        - `set_interpolation`
+        - `upsert_marker`
+        - `delete_marker`
+        - `replace_track`
+        - `copy_transform`
+    - camera
+      - `replay_path_clearance` — verify or explicitly skip a complete native camera-path collision sweep
+      - `replay_camera_preset`
+        - `preset`: `static` / `slide` / `rise` / `push` / `pan` / `orbit` / `follow`
+        - `profile`: `interior` / `exterior`
+        - `replay_time_mode`: `freeze` / `advance_1x`
+        - `interior_height_mode`: `support_plus_1_6` / `explicit`
+    - preview and validation
+      - `replay_preview`
+        - `output_mode`: `video` / `contact_sheet` / `frames`
+      - `replay_validate_range`
+  - **Rendering**
+    - `render_presets`
+    - `render_validate`
+    - `render_start`
+    - `render_still`
+  - **Production contract, edit, and acceptance**
+    - `production_contract_draft` — draft and await physical player review
+    - `production_status` — including resumable contract/export-review polling
+    - `production_progress`
+    - `production_visual_review`
+      - `outcome`: `accepted` / `revise`
+    - `production_edit`
+    - `production_assemble`
+    - `production_check` — deterministic checks and, when needed, player exception/revision review
+  - **Projects and handoff**
+    - `project_list`
+    - `project_create`
+    - `project_get`
+    - `project_apply` — revision-checked project operations
+      - `set` — fields: `title` / `creative_brief` / `notes` / `target_aspect_ratios` / `output_root`
+      - scenes: `upsert_scene` / `remove_scene` / `reorder_scenes`
+      - takes: `upsert_take` / `remove_take` / `reorder_takes`
+      - shots: `upsert_shot` / `remove_shot` / `reorder_shots`
+      - `set_note`
+    - `project_import_replay`
+      - `provenance`: `player` / `agent`
+    - `project_validate`
+    - `project_export_handoff`
+
+- **Registered MCP resources** (not tools, included for registry completeness)
+  - `replay-mcp://schema/{name}` — bridge v1 JSON Schema
+  - `replay-mcp://artifact/{id}` — verified artifact
+  - `replay-mcp://project/{id}/manifest` — project manifest
+  - `replay-mcp://replay/{id}/metadata` — replay metadata
+  - `replay-mcp://job/{id}/log` — persistent job log
+  - `replay-mcp://audit/{session_id}` — session audit trace
+
+## Source of truth
+
+- Public tool registry: `packages/mcp-server/src/tools/register.ts`
+- Public resource registry: `packages/mcp-server/src/resources/register.ts`
+- Game action vocabulary and validation: `src/main/java/net/ofts/replay_mcp/action/ActionKind.java`, `ActionBatchValidator.java`, and `MinecraftBridgeAdapter.java`
+- Spatial-map contract: `packages/mcp-server/src/spatial/maps.ts` and `protocol/bridge-v1/schemas/spatial-map.schema.json`
+- Timeline operation implementation: `src/main/java/net/ofts/replay_mcp/timeline/TimelineEngine.java`
+- Project operation implementation: `packages/mcp-server/src/projects/store.ts`

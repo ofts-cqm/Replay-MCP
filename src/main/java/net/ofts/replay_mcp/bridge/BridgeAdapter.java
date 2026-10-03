@@ -13,6 +13,7 @@ public interface BridgeAdapter {
     JsonObject capabilities();
     default boolean flightGranted() { return false; }
     default void releaseAllInputs() { }
+    default void requireMutationAllowed(String method) { }
     default void timelineChanged(JsonObject timeline) { }
     default JsonElement invoke(String method, JsonObject params, CancellationToken cancellation) {
         throw new BridgeException(BridgeError.CAPABILITY_UNAVAILABLE, method + " is unavailable in the installed runtime");

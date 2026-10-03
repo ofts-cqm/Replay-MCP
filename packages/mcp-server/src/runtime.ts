@@ -5,6 +5,8 @@ import type { CliOptions } from "./config.js";
 import { JobStore } from "./jobs/store.js";
 import { LeaseController } from "./lease/controller.js";
 import { AuditLog } from "./persistence.js";
+import { ProgressStore } from "./production/progress.js";
+import { ProductionStore } from "./production/store.js";
 import { ProjectStore } from "./projects/store.js";
 import { asObject } from "./types.js";
 
@@ -17,6 +19,8 @@ export class ReplayMcpRuntime {
   readonly artifacts: ArtifactStore;
   readonly jobs: JobStore;
   readonly projects: ProjectStore;
+  readonly production: ProductionStore;
+  readonly progress: ProgressStore;
   readonly recordingContexts = new Map<string, { project_id?: string; scene_id?: string; take_id?: string }>();
   #started = false;
 
@@ -30,6 +34,8 @@ export class ReplayMcpRuntime {
       finished: (instanceId, jobId) => this.leases.releaseJob(instanceId, jobId),
     });
     this.projects = new ProjectStore(options.dataDir, this.artifacts);
+    this.production = new ProductionStore(options.dataDir, this.artifacts, this.jobs);
+    this.progress = new ProgressStore(options.dataDir,this.artifacts,this.jobs,this.production);
     this.discovery = new DiscoveryManager(options.gameDirs, options.guessedGameDirs, options.discoveryIntervalMs, this.audit, {
       ...(options.configFiles ? { configFiles: options.configFiles } : {}),
       ...(options.gameDirSources ? { gameDirSources: options.gameDirSources } : {}),
@@ -38,7 +44,7 @@ export class ReplayMcpRuntime {
 
   async start(): Promise<void> {
     if (this.#started) return;
-    await Promise.all([this.artifacts.load(), this.jobs.load(), this.projects.load()]);
+    await Promise.all([this.artifacts.load(), this.jobs.load(), this.projects.load(), this.production.load(),this.progress.load()]);
     await this.discovery.start();
     this.#started = true;
   }

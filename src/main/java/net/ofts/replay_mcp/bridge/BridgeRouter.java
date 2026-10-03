@@ -22,7 +22,7 @@ public final class BridgeRouter {
             "system.hello", "system.capabilities", "system.status", "system.health",
             "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.snapshot", "observation.query", "observation.spatial_map",
             "recording.status", "replay.list", "replay.metadata", "timeline.get", "timeline.validate",
-            "render.presets", "render.preflight", "action.validate");
+            "render.presets", "render.preflight", "action.validate", "production.status");
     private static final Set<String> LOCAL_ONLY = Set.of("lease.human_revoke");
 
     private final DirectorLeaseManager leases;
@@ -50,7 +50,7 @@ public final class BridgeRouter {
         session.requireMethod(request.method());
         if (LOCAL_ONLY.contains(request.method())) throw new BridgeException(BridgeError.POLICY_DENIED, "operation is local-only");
         boolean mutation = !READ_ONLY.contains(request.method()) && !request.method().equals("lease.acquire") && !request.method().equals("lease.heartbeat") && !request.method().equals("lease.release");
-        if (mutation) requireLease(session, request.params());
+        if (mutation) { requireLease(session, request.params()); adapter.requireMutationAllowed(request.method()); }
         String requestId = mutation ? requiredString(request.params(), "request_id") : null;
         if (mutation) {
             var cached = idempotency.lookup(requestId, request.params());
@@ -137,7 +137,7 @@ public final class BridgeRouter {
     }
 
     private JsonObject emergencyStop() {
-        operations.cancelAll(); adapter.releaseAllInputs(); leases.emergencyStop();
+        operations.cancelAll(); adapter.releaseAllInputs(); leases.emergencyStop(net.ofts.replay_mcp.lease.RevocationTrigger.command("bridge", "system.emergency_stop", null));
         events.publish("emergency_stop", new JsonObject()); return object("stopped", true);
     }
 
@@ -180,7 +180,7 @@ public final class BridgeRouter {
         try { audit.append(type, requestId, details); } catch (IOException e) { throw new BridgeException(BridgeError.INTERNAL_ERROR, "audit write failed"); }
     }
 
-    private static boolean knownFamily(String method) { return method.matches("(observation|action|recording|replay|timeline|render)\\.[a-z_]+") && !method.contains(".."); }
+    private static boolean knownFamily(String method) { return method.matches("(observation|action|recording|replay|timeline|render|production)\\.[a-z_]+") && !method.contains(".."); }
     private static JsonObject object(String name, boolean value) { JsonObject result = new JsonObject(); result.addProperty(name, value); return result; }
     private static String requiredString(JsonObject o, String key) { if (!o.has(key) || !o.get(key).isJsonPrimitive() || o.get(key).getAsString().isBlank()) throw new BridgeException(BridgeError.INVALID_REQUEST, key + " is required"); return o.get(key).getAsString(); }
     private static long requiredLong(JsonObject o, String key) { if (!o.has(key)) throw new BridgeException(BridgeError.INVALID_REQUEST, key + " is required"); try { return o.get(key).getAsLong(); } catch (RuntimeException e) { throw new BridgeException(BridgeError.INVALID_REQUEST, key + " must be an integer"); } }
