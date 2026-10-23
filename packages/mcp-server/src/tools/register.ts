@@ -24,8 +24,25 @@ const regularGameQuerySchema = z.object({
   ...instance, kind: z.enum(["player", "world", "entities", "blocks", "inventory", "screen", "scoreboard", "chat_or_system_messages", "target"]),
   bounds: z.record(z.string(), z.number()).optional(), distance: z.number().positive().max(256).optional(), type: z.string().optional(),
   name: z.string().optional(), tags: z.array(z.string()).optional(), observation_ids: z.array(z.string()).optional(), limit: z.number().int().min(1).max(4096).optional(),
-});
+}).strict();
 const gameQuerySchema = z.union([regularGameQuerySchema, spatialMapQuerySchema]);
+// Publish a plain object for clients that cannot expose root-level unions. Keep
+// all variant validation (including refinements/defaults) inside the handler.
+const gameQueryInputSchema = z.object({
+  ...regularGameQuerySchema.shape,
+  kind: z.enum([...regularGameQuerySchema.shape.kind.options, "spatial_map"]),
+  bounds: regularGameQuerySchema.shape.bounds.describe("Required for spatial_map: integer min_x/max_x, min_y/max_y, min_z/max_z; each min < max."),
+  representation: z.enum(["surface", "volume"]).optional().describe("Required for spatial_map only."),
+  cell_size: z.union([z.literal(2), z.literal(4), z.literal(8), z.literal(16), z.literal(32)]).optional()
+    .describe("Required for spatial_map. Size 2 requires a containing size-4 refines_map_id and a matching fallback_reason."),
+  material_mix_limit: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+  require_complete: z.boolean().optional(),
+  refines_map_id: z.string().min(1).max(128).optional(),
+  timeout_ms: timeout,
+  surface_mode: z.enum(["world_surface", "motion_blocking_no_leaves"]).optional().describe("surface representation only; defaults to motion_blocking_no_leaves."),
+  fallback_reason: z.enum(["unresolved_surface_boundary", "adjacent_surfaces", "tight_clearance", "thin_geometry", "adjacent_volumes"]).optional()
+    .describe("Size 2 only. Surface: unresolved_surface_boundary or adjacent_surfaces. Volume: tight_clearance, thin_geometry or adjacent_volumes."),
+}).strict();
 const gameAction = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]*$/) }).catchall(z.unknown()).superRefine((action, context) => {
   if (action.kind !== "navigate_to") return;
   for (const coordinate of ["x", "y", "z"] as const) {
@@ -202,9 +219,12 @@ export function registerTools(server: McpServer, runtime: ReplayMcpRuntime): voi
   }));
 
   server.registerTool("game_query", {
-    title: "Query structured game state", description: "Read precise bounded state without capturing another image or loading distant chunks.",
-    inputSchema: gameQuerySchema, annotations: GAME_READ,
-  }, safe(async (args, signal) => {
+    title: "Query structured game state", description: "Read bounded state without images or distant chunk loading. spatial_map requires bounds, representation and cell_size; spatial-only fields cannot accompany ordinary queries. Spatial queries reject ordinary filters (distance, type, name, tags, observation_ids, limit).",
+    inputSchema: gameQueryInputSchema, annotations: GAME_READ,
+  }, safe(async (input, signal) => {
+    const parsed = gameQuerySchema.safeParse(input);
+    if (!parsed.success) throw new SidecarError("invalid_params", "Invalid game_query parameter combination", { issues: parsed.error.issues });
+    const args = parsed.data;
     if (args.kind === "spatial_map") {
       const { result, client } = await spatialMaps.query(runtime, args as SpatialMapArgs, signal);
       return ok(`Spatial ${args.representation} map sampled without loading distant chunks.`, {
@@ -844,14 +864,14 @@ function formatTime(timeUs: number): string { return `${(timeUs / 1_000_000).toF
 function escapeXml(value: string): string { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;" }[character]!)); }
 
 function ok(message: string, structuredContent: Record<string, unknown>, extra: ToolContent[] = []): ToolResult {
-  return { content: [{ type: "text", text: message }, ...extra], structuredContent };
+  return { content: [{ type: "text", text: message }, { type: "text", text: JSON.stringify(structuredContent) }, ...extra], structuredContent };
 }
 function okWith(message: string, structuredContent: Record<string, unknown>, extra: ToolContent[]): ToolResult { return ok(message, structuredContent, extra); }
 
 function failure(error: unknown): ToolResult {
   const code = errorCode(error), message = errorMessage(error);
   const data = error instanceof BridgeRpcError || error instanceof SidecarError ? error.data : {};
-  return { isError: true, content: [{ type: "text", text: `${code}: ${message}` }], structuredContent: { ok: false, error: { code, message, data } } };
+  return { ...ok(`${code}: ${message}`, { ok: false, error: { code, message, data } }), isError: true };
 }
 
 function errorCode(error: unknown): string {

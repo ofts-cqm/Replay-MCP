@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "replay-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/replay-mcp-server.mjs"
+      ]
+    }
+  }
+}

@@ -288,11 +288,12 @@ handoffs:
 Each handoff must include the request-record path. Release or dismiss the prior
 subagent before starting the next phase subagent; never keep overlapping
 controllers or retain an old phase agent merely for convenience. If any
-governing instruction or host limitation prevents the required release, explain
-the restriction and ask the user for explicit permission or direction before
-continuing. User permission does not override a higher-priority prohibition. If
-the host has no subagent capability, write the same checkpoint and deliberately
-switch tool vocabularies before the next context.
+governing instruction or host limitation prevents the required lifecycle, use
+sequential execution with the same durable checkpoints. Do not create a phase
+agent unless it can be stopped and its control released before the next phase.
+If a controller is already active, stop it and verify release before proceeding;
+an unresolved controller is a blocker. In sequential execution, deliberately
+switch tool vocabularies at each checkpoint. Governing instructions still apply.
 
 ## Deterministic production completion (source implementation v1)
 
@@ -517,7 +518,7 @@ while disconnected. `accepted` requires the matching saved override; `rejected`
 means repair within the approved contract, then revalidate; `deferred` means stop
 waiting without interpreting a decision. Changing the export supersedes the old
 binding. Do not end a turn claiming you will resume automatically: this wait can
-resume an active agent, but a finished/closed Codex session needs host-level event
+resume an active agent, but a finished/closed host session needs host-level event
 integration or another user message. Do not claim that integration exists.
 
 Artifact/project/job stores now merge unrelated records under a cross-process

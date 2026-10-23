@@ -1,0 +1,16 @@
+{
+  "name": "replay-mcp-local",
+  "owner": {
+    "name": "OFTS CQM"
+  },
+  "plugins": [
+    {
+      "name": "replay-director",
+      "source": "./plugins/replay-director-claude",
+      "description": "Plan and capture player-led or agent-directed Minecraft productions, author cinematic Replay Mod shots, verify renders, and finish one multi-scene video."
+    }
+  ],
+  "metadata": {
+    "description": "Local Replay Director filmmaking plugins for Minecraft and Replay Mod."
+  }
+}

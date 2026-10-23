@@ -1,7 +1,7 @@
 # Replay MCP Architecture and Interface Scope
 
 Status: the Minecraft-side Fabric submod, private bridge, Node sidecar, complete
-39-tool public MCP surface, production project store, player-led capture route,
+48-tool public MCP surface, production project store, player-led capture route,
 and production-oriented Replay Director skill package are implemented. Automated fake-bridge acceptance
 passes. The user-attended graphical player-capture/Replay Mod/render smoke
 remains pending, so that route is not yet marked live-validated. Optional editor
@@ -9,8 +9,8 @@ integrations remain future work.
 
 Implementation status in this document describes code coverage, not completed
 workflow validation. Unit/contract checks, builds, package validation, and the
-fake-bridge MCP workflow have passed; only the live graphical workflow pass is
-still pending.
+fake-bridge MCP workflow have passed; live graphical and fresh host-session
+acceptance remain pending as detailed in HOST_SUPPORT.md.
 
 | Scope | Status |
 | --- | --- |
@@ -27,7 +27,7 @@ still pending.
 | Complete end-to-end workflow acceptance testing | **Automated fake bridge passed; live user-attended smoke pending** |
 
 Replay MCP is a client-side Fabric submod for Replay Mod plus a local MCP
-server and a Codex plugin. The implemented workflow lets an AI agent:
+server and shared Replay Director skills packaged for Codex and Claude Code. The implemented workflow lets an AI agent:
 
 1. observe and operate a live Minecraft client through normal player inputs;
 2. record performances with Replay Mod;
@@ -46,6 +46,36 @@ The current project scaffold targets Minecraft 26.2, Fabric Loader 0.19.5,
 Fabric API 0.160.0+26.2, and Replay Mod 26.2-2.6.27. Those versions describe
 the current development snapshot, not a permanent compatibility promise.
 
+## Agent host adapters
+
+`plugins/replay-director-template/` owns shared skills and authored metadata;
+`adapters/claude/` supplies the Claude manifest and root MCP launch definition.
+The packager retains the Codex/portable output and generates a separate Claude
+output, using an identical pinned sidecar bundle and bridge-v1 protocol copy.
+One host-neutral plugin version (currently 0.2.0) is shared by all manifests;
+sidecar 0.1.0, bridge replay-mcp.bridge/1, and Fabric mod versions remain distinct.
+Generated build receipts detect edits absent from source before replacement.
+A legacy output without a receipt must match static sources before rebuilding.
+
+The public game_query schema is a plain object. Its handler applies strict
+ordinary/spatial variant validation before bridge access, including defaults
+and refinement constraints. All success/error helpers return a summary plus
+complete compact JSON text equivalent to structuredContent, preserving inline
+images and resource links. Large responses are never silently shortened by the
+server; host output limits and full-result retrieval requirements are described
+in the shared host-capabilities reference.
+
+The existing SDK 2.0.0 legacy stdio entry point is retained. Default, explicit
+legacy, and auto-fallback clients negotiate 2025-11-25 in the automated suite;
+this is not a claim of modern pinned-protocol support. Cancellation of a
+directing mutation forwards bridge cancellation and releases the owned lease;
+shutdown also releases ownership. Review polling remains read-only and resumes
+from authoritative revision/sequence cursors across process restarts.
+
+See [HOST_SUPPORT.md](HOST_SUPPORT.md) for versioned evidence and remaining
+host-session/live-production acceptance. A passing SDK test is not a substitute
+for an actual host's skill discovery or visual inspection.
+
 ## 1. Design principles
 
 - **The pixels come from Minecraft.** The agent directs and edits real recorded
@@ -56,7 +86,7 @@ the current development snapshot, not a permanent compatibility promise.
   go through Minecraft's normal client mechanisms so servers and Replay Mod see
   legitimate player activity.
 - **Keep workflows out of the wire protocol.** The mod exposes reliable,
-  composable primitives. Codex skills describe filmmaking workflows such as
+  composable primitives. Shared skills describe filmmaking workflows such as
   scene transitions, dialogue coverage, montages, and trailers.
 - **One requested production means one deliverable.** Multiple actions or
   locations are scenes in one video unless the user explicitly requests

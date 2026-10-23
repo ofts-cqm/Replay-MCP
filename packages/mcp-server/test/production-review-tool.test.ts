@@ -22,6 +22,7 @@ it("draft waits by default; status continues the same cursor without drafting or
     const read=vi.spyOn(built.runtime,"read").mockImplementation(async()=>({result:authority,client:bridge}));
     const acquire=vi.spyOn(built.runtime.leases,"acquire");
     const response=await client.callTool({name:"production_contract_draft",arguments:{project_id,contract:{original_request:"One minute",fps:30,target_frames:1800,width:1280,height:720}}});
+    expect(response.content[1]).toMatchObject({type:"text",text:JSON.stringify(response.structuredContent)});
     expect(response.isError).not.toBe(true);
     expect(response.structuredContent).toMatchObject({review_wait:{status:"commented",draft_hash:"a",after_submission_sequence:0}});
     expect(mutate).toHaveBeenCalledTimes(1);
@@ -29,6 +30,7 @@ it("draft waits by default; status continues the same cursor without drafting or
 
     authority={...initial,locked_hash:"a",review_submission_sequence:2,review_submission:{draft_hash:"a",sequence:2,approved:true},presentation:{state:"closed"}};
     const resumed=await client.callTool({name:"production_status",arguments:{project_id,wait_timeout_ms:1000,draft_hash:"a",after_submission_sequence:1}});
+    expect(resumed.content[1]).toMatchObject({type:"text",text:JSON.stringify(resumed.structuredContent)});
     expect(resumed.isError).not.toBe(true);
     expect(resumed.structuredContent).toMatchObject({authority:{review_wait:{status:"approved"},locked_hash:"a"}});
     expect(mutate).toHaveBeenCalledTimes(1);expect(acquire).not.toHaveBeenCalled();expect(read).toHaveBeenCalledTimes(1);

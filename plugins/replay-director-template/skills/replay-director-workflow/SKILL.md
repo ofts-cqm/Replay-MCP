@@ -1,6 +1,6 @@
 ---
 name: replay-director-workflow
-description: Direct an agent-performed Minecraft production from scouting through Replay Mod capture, replay camera work, verified shot plates, and editor handoff. Use when Codex controls the live player; do not use for ordinary gameplay or a player-controlled performance.
+description: Direct an agent-performed Minecraft production from scouting through Replay Mod capture, replay camera work, verified shot plates, and editor handoff. Use when the agent controls the live player; do not use for ordinary gameplay or a player-controlled performance.
 ---
 
 # Replay Director Workflow
@@ -13,6 +13,9 @@ Read [Replay MCP operations](references/replay-mcp-operations.md) before using
 the tools. Its production-memory and information boundaries are mandatory; it
 is also the deployed-agent reference for control, runtime contexts, recording
 finalization, jobs, and the public tool groups.
+
+Read the shared [host capability guidance](references/host-capabilities.md) before starting. Use sequential phase handoffs when delegation or agent
+release is unavailable or prohibited by governing instructions.
 
 ## Establish the production boundary
 
@@ -100,8 +103,9 @@ controller for a Minecraft instance. A capture subagent must hand off the
 request-record path, project/take IDs, accepted ranges, observations, and
 unresolved warnings, then be released before a replay-camera subagent starts.
 Release the camera subagent after the request check, shot plates, and validation
-evidence are handed to post-production. Follow the operations rule and ask the
-user before continuing if a governing restriction prevents required release.
+evidence are handed to post-production. If delegation or release is unavailable
+or prohibited, execute sequentially with those same checkpoints. Never start
+a new controller while a previous controller is still active.
 
 ## Edit and review efficiently
 

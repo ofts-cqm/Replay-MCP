@@ -12,6 +12,9 @@ tool/control contracts, read
 Building and scene coverage is camera-led. Unlike player coverage, the camera
 should normally move in one deliberate, continuous trace throughout each shot.
 
+Read the shared [host capability guidance](../replay-director-workflow/references/host-capabilities.md) before starting. Use sequential phase handoffs when delegation or agent
+release is unavailable or prohibited by governing instructions.
+
 ## Shot length, motion, and coverage
 
 1. Recommended shot lengths are **3–10 seconds**, with absolute bounds of

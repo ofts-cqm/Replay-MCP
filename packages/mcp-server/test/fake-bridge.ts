@@ -15,6 +15,8 @@ export interface FakeBridge {
 interface FakeBridgeOptions {
   heartbeatFailures?: number;
   spatialMap?: boolean;
+  hangActions?: boolean;
+  productionState?: Record<string, unknown>;
 }
 
 export async function createFakeBridge(gameDir: string, options: FakeBridgeOptions = {}): Promise<FakeBridge> {
@@ -51,7 +53,7 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
   const address = wss.address();
   if (!address || typeof address === "string") throw new Error("fake bridge did not bind TCP");
 
-  const readOnly = new Set(["system.hello", "system.status", "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.query", "observation.spatial_map", "recording.status", "replay.list", "replay.metadata", "timeline.get", "render.presets", "render.preflight", "test.timeout"]);
+  const readOnly = new Set(["system.hello", "system.status", "lease.status", "observation.framebuffer", "observation.motion_burst", "observation.query", "observation.spatial_map", "recording.status", "replay.list", "replay.metadata", "timeline.get", "render.presets", "render.preflight", "test.timeout", "production.status"]);
   wss.on("connection", (socket) => {
     let hello = false;
     socket.on("close", () => { if (leaseOwner === socket) { leaseOwner = undefined; leaseId = ""; fence++; } });
@@ -73,6 +75,7 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
           success(status({ protocol: "replay-mcp.bridge/1", instance_id: instanceId, process_id: process.pid, connection_id: crypto.randomUUID() }));
           break;
         case "system.status": success(status()); break;
+        case "production.status": success(options.productionState ?? {}); break;
         case "lease.status": success(leaseOwner ? { held: true, epoch: fence, owner_label: "test", expires_at: new Date(Date.now() + 15_000).toISOString() } : { held: false, epoch: fence }); break;
         case "lease.acquire":
           if (leaseOwner) return failure("control_busy", "already held");
@@ -117,6 +120,7 @@ export async function createFakeBridge(gameDir: string, options: FakeBridgeOptio
           break;
         }
         case "action.start_batch": {
+          if (options.hangActions) break;
           const actions = Array.isArray(params.actions) ? params.actions as Record<string, unknown>[] : [];
           success({ trace: actions.map((action) => ({ kind: action.kind, status: "completed", ...(action.kind === "navigate_to" ? { navigation: { native_node_count: 4, replans: 0, reached: true } } : {}) })), final_state: { tick: 81 } });
           break;
