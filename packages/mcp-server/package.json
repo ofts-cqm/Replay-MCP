@@ -26,7 +26,7 @@
     "smoke:plugin": "node scripts/smoke-plugin.mjs",
     "test": "node scripts/package-plugin.mjs && vitest run",
     "test:unit": "vitest run test/config.test.ts test/contract.test.ts test/artifacts-projects.test.ts test/capture-importer.test.ts",
-    "test:integration": "vitest run test/bridge.test.ts test/workflow.test.ts test/lease-jobs.test.ts test/packaging.test.ts",
+    "test:integration": "vitest run test/bridge.test.ts test/workflow.test.ts test/lease-jobs.test.ts test/packaging.test.ts test/compatibility-lifecycle.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

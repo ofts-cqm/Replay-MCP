@@ -13,6 +13,9 @@ Read [Replay MCP operations](../replay-director-workflow/references/replay-mcp-o
 for its mandatory production-memory and information boundaries. Also apply its
 project, job, and artifact contracts when the handoff still involves Replay MCP.
 
+Read the shared [host capability guidance](../replay-director-workflow/references/host-capabilities.md) before starting. Use sequential phase handoffs when delegation or agent
+release is unavailable or prohibited by governing instructions.
+
 ## Final completion evidence
 
 For a mechanically certified straight-cut film, use `production_edit`,
@@ -82,8 +85,9 @@ Before importing, require:
 
 Use a post-production subagent by default when supported. The replay-camera
 agent must first hand off the request-record path, verified shot plates, and
-validation evidence, then be released. If a governing restriction prevents
-required release, ask the user before continuing. Post-production must not hold
+validation evidence, then be released. If delegation or release is unavailable
+or prohibited, execute sequentially with the same checkpoint; never overlap
+controllers. Post-production must not hold
 or reacquire Minecraft control unless it discovers a shot defect that genuinely
 requires returning to Replay; in that case finish the editor checkpoint first
 and start a new, single-controller Replay phase.
@@ -105,5 +109,5 @@ Escape discards unsent input and never approves.
 Export review supports explicit **Reject and revise**, **Accept exceptions**, and
 **Later**. Continue timed-out waits with the export binding/decision-sequence cursor
 as documented in operations; keep the turn active while awaiting the player.
-Later, Escape and AFK timeouts are not rejection or acceptance. A finished Codex
+Later, Escape and AFK timeouts are not rejection or acceptance. A finished host
 turn is not automatically awakened by this MCP wait.

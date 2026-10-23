@@ -12,6 +12,9 @@ For the mandatory production-memory and information boundaries plus
 tool/control contracts, read
 [Replay MCP operations](../replay-director-workflow/references/replay-mcp-operations.md).
 
+Read the shared [host capability guidance](../replay-director-workflow/references/host-capabilities.md) before starting. Use sequential phase handoffs when delegation or agent
+release is unavailable or prohibited by governing instructions.
+
 ## Default to fixed observation
 
 For player action or movement, first choose a fixed camera position with a

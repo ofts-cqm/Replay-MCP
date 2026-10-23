@@ -78,6 +78,29 @@ describe("spatial-map public contract", () => {
     expect(fake.calls.some((entry) => entry.method === "observation.spatial_map")).toBe(false);
   });
 
+  it("rejects mixed and incomplete variants before any bridge call", async () => {
+    const root = await mkdtemp(join(tmpdir(), "spatial-combinations-"));
+    fake = await createFakeBridge(join(root, "game"));
+    ({ built, client } = await connect(root, fake));
+    const bounds = { min_x: 0, max_x: 8, min_y: 48, max_y: 96, min_z: 0, max_z: 8 };
+    const before = fake.calls.length;
+    for (const args of [
+      { kind: "player", representation: "surface" },
+      { kind: "spatial_map", bounds, cell_size: 4 },
+      { kind: "spatial_map", representation: "surface", cell_size: 4 },
+      { kind: "spatial_map", representation: "volume", bounds, cell_size: 4, surface_mode: "world_surface" },
+      { kind: "spatial_map", representation: "surface", bounds, cell_size: 4, distance: 10 },
+      { kind: "spatial_map", representation: "surface", bounds, cell_size: 2 },
+    ]) {
+      const result = await client.callTool({ name: "game_query", arguments: args });
+      expect(result.isError).toBe(true);
+      expect(result.content[1]).toMatchObject({ type: "text", text: JSON.stringify(result.structuredContent) });
+    }
+    expect(fake.calls).toHaveLength(before);
+    await call(client, { kind: "player" });
+    await call(client, { kind: "spatial_map", representation: "volume", bounds, cell_size: 4 });
+  });
+
   it("enforces representation-specific level-2 reasons in the public schema", async () => {
     const root = await mkdtemp(join(tmpdir(), "replay-mcp-spatial-schema-"));
     fake = await createFakeBridge(join(root, "game"));

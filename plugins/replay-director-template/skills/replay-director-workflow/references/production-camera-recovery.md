@@ -282,7 +282,7 @@ close it merely to read immutable source metadata. Never read an active unfinish
 recording as finalized input. Preserve source and working-copy identities.
 
 Native mod changes require Minecraft restart; template/sidecar changes require
-packaging and a fresh Codex/plugin session. Reinstalling does not hot-reload an
+packaging and a fresh host/plugin session. Reinstalling does not hot-reload an
 existing MCP process. With explicit debugging authorization, target only the
 confirmed dev-client PID for shutdown/relaunch via `./gradlew runClient`, after
 protecting recording/render writes; this is not standing filming permission to

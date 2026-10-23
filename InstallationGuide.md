@@ -18,7 +18,8 @@ npm run package:plugin
 ```
 
 This compiles the Node.js MCP sidecar and creates the complete, installable
-plugin at `plugins/replay-director/`. That directory is generated and ignored;
+Codex/portable plugin at `plugins/replay-director/` and Claude Code plugin at
+`plugins/replay-director-claude/`. Both directories are generated and ignored;
 the authored manifests and skills live in `plugins/replay-director-template/`.
 
 ### 3. Build the Fabric mod
@@ -69,9 +70,9 @@ client; the generic shape is:
 {
   "mcpServers": {
     "replay-mcp": {
-      "command": "node",
+      "command": "/absolute/path/to/node",
       "args": [
-        "/absolute/path/to/replay-mcp/packages/mcp-server/dist/cli.js",
+        "/absolute/path/to/replay-mcp/plugins/replay-director/bin/replay-mcp-server.mjs",
         "--game-dir",
         "/absolute/path/to/minecraft-game-directory"
       ]
@@ -89,14 +90,67 @@ codex plugin add replay-director@replay-mcp-local
 
 Start a new Codex thread after installing or updating the plugin.
 
-### 8. Optional: install a post-production editor
+### 8. Install the Claude Code plugin
+
+Choose a local load:
+
+```sh
+claude --plugin-dir "/absolute/path/to/replay-mcp/plugins/replay-director-claude"
+```
+
+Or register the built local checkout as a marketplace:
+
+```sh
+claude plugin validate "/absolute/path/to/replay-mcp/plugins/replay-director-claude"
+claude plugin marketplace add "/absolute/path/to/replay-mcp"
+claude plugin install replay-director@replay-mcp-local
+```
+
+Build before installation. The marketplace points to the generated Claude
+folder; adding the unbuilt Git repository by URL is not a supported distribution
+route. Start a fresh Claude Code session after updates. The adapter uses one
+root `.mcp.json` and `${CLAUDE_PLUGIN_ROOT}` to resolve the pinned bundle,
+independently of the user's working directory. This is for Claude Code, not
+Claude web or other Claude products. Optional `agents/openai.yaml` metadata does
+not affect Claude instructions.
+
+### 9. Host capabilities and configuration
+
+See [HOST_SUPPORT.md](HOST_SUPPORT.md) for tested versions and separate package,
+connection, skill-loading, and production evidence. Generic MCP clients need
+local stdio, complete JSON tool results, image inspection (inline or through a
+local viewer), and access to verified artifact paths. If skills are not loaded
+automatically, manually load the desired `skills/<name>/SKILL.md` and its linked
+references from the generated plugin.
+
+Use absolute paths for both the Node executable and pinned bundle in generic
+client configurations. Node 20+ is required. Persistent state defaults to the
+platform user-data directory, outside plugins. Override with an absolute
+`REPLAY_MCP_DATA_DIR` or `--data-dir`; never put state in a generated/cache folder.
+The bundle's location does not identify the production workspace. Set
+`REPLAY_MCP_WORKSPACE` explicitly for workspace configuration when the host uses
+a different working directory. Game discovery precedence is:
+
+1. Repeated `--game-dir` arguments.
+2. `REPLAY_MCP_GAME_DIR` (platform path-delimited).
+3. `.replay-mcp.json` in the explicit/discovered workspace.
+4. A prepared workspace `run/.replay-mcp` directory.
+5. Persisted `configure` directories in the selected data directory.
+6. Conventional game-directory guesses.
+
+Use absolute game-directory overrides for reproducible launches. Workspace
+configuration paths are relative to the workspace. Relative CLI/environment
+paths resolve from the process working directory. Editors and music services
+remain independently configured optional dependencies.
+
+### 10. Optional: install a post-production editor
 
 This product does not bundle any video editors. A recommended video editor is
 [SynthCut](https://github.com/Relo-video/SynthCut). Please install a
 post-production video editor so the AI agent can add captions, music, and cuts
 after the video is made using Replay. 
 
-### 9. Optionl: configure a music generator
+### 11. Optional: configure a music generator
 
 This product does not come with music. If you have a specific song you want to
 use, you can download the song and tell the AI to use it. If you don't have a

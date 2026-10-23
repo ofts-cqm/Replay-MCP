@@ -99,6 +99,9 @@ describe("in-process MCP filmmaking workflow", () => {
     const observation = await call(client, "game_observe", { view: "annotated" });
     expect(observation.content.some((block) => block.type === "image")).toBe(true);
     expect(structured(observation).capture_tick).toBe(80);
+    const image = observation.content.find(block => block.type === "image")!;
+    const imageResource = await client.readResource({ uri: (structured(observation).artifact as {resource_uri: string}).resource_uri });
+    expect(imageResource.contents[0]).toMatchObject({ blob: image.data, mimeType: image.mimeType });
     const persistedBefore = (structured(await call(client, "artifact_list", {})).artifacts as unknown[]).length;
     const ephemeral = structured(await call(client, "game_observe", { view: "clean", persist: false })).artifact as Record<string, unknown>;
     expect(ephemeral.persisted).toBe(false);
@@ -167,6 +170,7 @@ describe("in-process MCP filmmaking workflow", () => {
 
 async function call(client: Client, name: string, args: Record<string, unknown>) {
   const result = await client.callTool({ name, arguments: args });
+  expect(result.content[1]).toMatchObject({ type: "text", text: JSON.stringify(result.structuredContent) });
   expect(result.isError, JSON.stringify(result.structuredContent)).not.toBe(true);
   return result;
 }

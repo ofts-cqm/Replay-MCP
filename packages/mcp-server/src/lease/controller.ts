@@ -69,6 +69,12 @@ export class LeaseController {
         fence: owned.lease.fence,
       }, { deadlineMs: deadlineFrom(params), ...(signal ? { signal } : {}) });
     } catch (error) {
+      // A cancelled directing call ends this control phase. The bridge cancel
+      // releases synthetic inputs; release ownership too so another session can
+      // safely continue. Never reacquire automatically after cancellation.
+      if (signal?.aborted && this.#owned.get(client.descriptor.instanceId) === owned) {
+        await this.release(client).catch(() => undefined);
+      }
       if (error instanceof BridgeRpcError && ["control_required", "stale_fence"].includes(error.code)) {
         this.#lose(client.descriptor.instanceId, error.code);
       }

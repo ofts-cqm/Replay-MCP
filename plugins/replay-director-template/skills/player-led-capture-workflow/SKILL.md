@@ -1,6 +1,6 @@
 ---
 name: player-led-capture-workflow
-description: Turn a player-controlled Minecraft performance marked with Replay MCP keybinds into one multi-scene video with authored replay cameras and verified renders. Use when the human player performs live; use replay-director-workflow when Codex controls the player.
+description: Turn a player-controlled Minecraft performance marked with Replay MCP keybinds into one multi-scene video with authored replay cameras and verified renders. Use when the human player performs live; use replay-director-workflow when the agent controls the player.
 ---
 
 # Player-Led Capture Workflow
@@ -14,6 +14,9 @@ tool, lease, recording, and job contracts. Read the applicable
 [player](../minecraft-player-cinematography/SKILL.md) and
 [building/scene](../minecraft-building-cinematography/SKILL.md) camera skills
 before authoring shots.
+
+Read the shared [host capability guidance](../replay-director-workflow/references/host-capabilities.md) before starting. Use sequential phase handoffs when delegation or agent
+release is unavailable or prohibited by governing instructions.
 
 ## Keep live performance lease-free
 
@@ -80,8 +83,9 @@ Use phase-specific subagents by default when supported. Release the
 capture/import subagent after it hands off the request-record path, project/take
 IDs, accepted ranges, and diagnostics. Use a separate replay-camera context,
 then append the Replay-edit request check and release it before post-production.
-Only one agent may control the Minecraft instance. If a governing restriction
-prevents required release, ask the user before continuing.
+Only one agent may control the Minecraft instance. If delegation or release is
+unavailable or prohibited, execute sequentially with those same checkpoints.
+An existing controller must be stopped before another takes over.
 
 Finish with [Replay post-production](../replay-post-production/SKILL.md),
 project validation, handoff export, and one `control_release` in final cleanup.

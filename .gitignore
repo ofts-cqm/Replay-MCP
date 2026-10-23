@@ -13,6 +13,7 @@ packages/mcp-server/protocol/
 
 # Generated, installable Replay Director plugin distribution
 /plugins/replay-director/
+/plugins/replay-director-claude/
 
 # IntelliJ
 out/
